@@ -23,7 +23,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { contextDirFor } from "../context/node-file.js";
+import { contextDirFor, CACHE_DIR } from "../context/node-file.js";
 import { checkGraph } from "./check.js";
 import { loadGraphCached } from "./load.js";
 import { buildRepoMap, formatRepoMap } from "./map.js";
@@ -819,18 +819,78 @@ export async function splitWorkspace(
 export { formatGrepResult, zeroHitNote };
 
 /**
- * Federated semantic search across all workspace children.
- * For each child, queries that child's embeddings DB and prefixes hits with
- * `[child/]`. All hits are merged, sorted by score desc, top `limit` returned.
+ * Federated semantic search across workspace children.
+ *
+ * Uses `embeddingsDbPath(contextDirFor(<root>/<child>))` — the same location
+ * where `trail build` writes the index — so it works for both trail-layout
+ * repos (`.trail/cache/.cache/embeddings.db`) and legacy graft-layout repos
+ * (`graft/.cache/embeddings.db`).
+ *
+ * `inScope` selects children by segment-aware prefix:
+ *   - equal to a child path, or starts with `<child>/`  → that child / group
+ *   - starts with `<child>/` where child is an ancestor → subpath filter within child
+ *   - no match → `isError: true`
+ *
+ * Errors (missing index, failed search) are reported, not swallowed.
  */
 export async function federateSemantic(
   root: string,
   override: string | undefined,
   query: string,
   limit: number,
+  inScope?: string,
 ): Promise<{ text: string; isError: boolean }> {
   const wg = loadWorkspaceGraphs(root, override);
+  const allChildren = [...wg.loaded.map(l => l.child), ...wg.missing].sort();
 
+  // ── Resolve scope from `in` ────────────────────────────────────────────────
+  let selectedChildren: string[];
+  let subpath: string | undefined;
+
+  if (inScope) {
+    const inTrimmed = inScope.replace(/\/$/, '');
+    // Rule 1: hijos cuyo path es igual o empieza con `in/`
+    const prefixMatches = allChildren.filter(
+      c => c === inTrimmed || c.startsWith(inTrimmed + '/'),
+    );
+    if (prefixMatches.length > 0) {
+      selectedChildren = prefixMatches;
+    } else {
+      // Rule 2: `in` apunta dentro de un hijo (subpath)
+      const ancestor = allChildren
+        .filter(c => inTrimmed.startsWith(c + '/'))
+        .sort((a, b) => b.length - a.length)[0];
+      if (ancestor) {
+        selectedChildren = [ancestor];
+        subpath = inTrimmed.slice(ancestor.length + 1);
+      } else {
+        return {
+          text: `no workspace repos match "in=${inTrimmed}" — available: ${allChildren.slice(0, 5).join(', ')}`,
+          isError: true,
+        };
+      }
+    }
+  } else {
+    selectedChildren = allChildren;
+  }
+
+  // ── Classify children by index presence ───────────────────────────────────
+  const noIndex: string[] = [];
+  const withIndex: string[] = [];
+  for (const child of selectedChildren) {
+    const dbPath = join(contextDirFor(join(root, child)), CACHE_DIR, 'embeddings.db');
+    if (existsSync(dbPath)) withIndex.push(child);
+    else noIndex.push(child);
+  }
+
+  if (withIndex.length === 0) {
+    return {
+      text: `0 of ${selectedChildren.length} workspace repos have a semantic index; run trail build to cover ${selectedChildren.join(', ')}`,
+      isError: true,
+    };
+  }
+
+  // ── Search each indexed child ──────────────────────────────────────────────
   interface Hit {
     child: string;
     node_id: string;
@@ -841,12 +901,23 @@ export async function federateSemantic(
   }
 
   const allHits: Hit[] = [];
+  const failLines: string[] = [];
+  let successCount = 0;
+  const k = subpath !== undefined ? limit * 10 : limit * 2;
 
-  for (const { child } of wg.loaded) {
-    const dbPath = join(root, child, 'graft', '.cache', 'embeddings.db');
+  for (const child of withIndex) {
+    const dbPath = join(contextDirFor(join(root, child)), CACHE_DIR, 'embeddings.db');
     try {
-      const hits = await searchSemantic(query, dbPath, limit * 2);
+      const hits = await searchSemantic(query, dbPath, k);
+      successCount++;
       for (const h of hits) {
+        if (
+          subpath !== undefined &&
+          h.file_path !== subpath &&
+          !h.file_path.startsWith(subpath + '/')
+        ) {
+          continue;
+        }
         allHits.push({
           child,
           node_id: h.node_id,
@@ -856,20 +927,35 @@ export async function federateSemantic(
           snippet: h.snippet,
         });
       }
-    } catch {
-      // Child has no embeddings yet — skip silently.
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      failLines.push(`semantic search failed in ${child}: ${msg.split('\n')[0]}`);
     }
   }
 
-  if (allHits.length === 0) {
-    return { text: 'no semantic matches found across workspace children', isError: false };
+  // ── Compose response ───────────────────────────────────────────────────────
+  const extraLines: string[] = [];
+  if (noIndex.length > 0) {
+    extraLines.push(
+      `${withIndex.length} of ${selectedChildren.length} workspace repos have a semantic index; run trail build to cover ${noIndex.join(', ')}`,
+    );
   }
+  extraLines.push(...failLines);
+
+  const isError = successCount === 0;
 
   allHits.sort((a, b) => b.score - a.score);
   const top = allHits.slice(0, limit);
 
-  const lines = top.map((h, i) =>
-    `${i + 1}. ${h.file_path} · ${h.symbol}  (score: ${h.score})\n   ${h.snippet}`
-  );
-  return { text: lines.join('\n\n'), isError: false };
+  const hitText =
+    top.length > 0
+      ? top
+          .map((h, i) => `${i + 1}. ${h.file_path} · ${h.symbol}  (score: ${h.score})\n   ${h.snippet}`)
+          .join('\n\n')
+      : 'no semantic matches found across workspace children';
+
+  const text =
+    extraLines.length > 0 ? `${hitText}\n\n${extraLines.join('\n')}` : hitText;
+
+  return { text, isError };
 }

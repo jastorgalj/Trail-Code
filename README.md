@@ -269,13 +269,13 @@ With no TTY to prompt on (CI, a Dockerfile, a piped shell), `init` writes **noth
 
 | Tool | Takes | What it's for |
 |---|---|---|
-| `trail_find_code` | a question | Ranked nodes with file:line, source inlined; usually the full answer, no follow-up read needed. |
+| `trail_find_code` | a question | Ranked nodes with file:line, source inlined; lexical + structural, no embeddings. Usually the full answer, no follow-up read needed. |
 | `trail_file_api` | a file path | Every signature in that file, no bodies: the API surface for a tenth of the tokens. |
 | `trail_trace_calls` | a symbol | Who depends on it, or what it depends on with `direction: out`, N levels deep for blast radius. |
 | `trail_find_all` | a regex | Every hit, grouped by enclosing symbol, ranked by how coupled that symbol is. |
 | `trail_repo_map` | nothing | A first look at an unfamiliar repo: directory clusters, hubs, hotspots. |
 | `trail_check_freshness` | nothing | Whether the local map has drifted from the code. |
-| `trail_search_semantic` | a question | Vector search over the semantic index: prose, specs and docs. **Added by this fork.** |
+| `trail_search_semantic` | a question | Vector search over the semantic index: prose, specs and docs; in a workspace, searches the index of each child repo. **Added by this fork.** |
 | `trail_build` | nothing | Rebuild graph + semantic index in the background. |
 | `trail_set_scope` | a path | Pin later queries to one subtree of a workspace. |
 
@@ -506,6 +506,8 @@ The model is trained on natural language, so `trail_search_semantic` earns its k
 ```python
 trail_search_semantic(query="cómo se calcula la cuota mínima", in="default-core", limit=5)
 ```
+
+`trail_find_code` and `trail ask` never use embeddings; the header `(lexical)` is expected.
 
 Filter hits below ~0.25 as noise; 0.44+ is a solid hit, 0.50+ high confidence.
 
