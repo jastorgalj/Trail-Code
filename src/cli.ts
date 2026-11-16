@@ -31,7 +31,7 @@ import { loadGraphCached } from "./graph/load.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refresh.js";
 import { isWorkspaceBuildRoot, loadWorkspaceGraphs, readWorkspace, writeWorkspace } from "./graph/workspace.js";
 import { NOT_GIT_LINE, NOT_GIT_PAIR_REFUSAL, homeFolderRefusal, isGitWorkTree } from "./init-guard.js";
-import { hasGraftIndex, nearestGraftRoot } from "./graph/root.js";
+import { hasGraftIndex, nearestGraftRoot, rootProblem } from "./graph/root.js";
 import { unsupportedExtensions, supportedExtensions } from "./graph/source-files.js";
 import { discoverWorkspaceChildren } from "./graph/scopes.js";
 import {
@@ -215,10 +215,29 @@ const DIR_ARG = ["[dir]", "repository root (default: nearest ancestor with a gra
  * answering from an ancestor's graph must never be silent.
  */
 function queryRoot(dir?: string): string {
-  if (dir !== undefined) return resolve(dir);
+  if (dir !== undefined) return requireRootDir(dir);
   const { root, levels } = nearestGraftRoot(process.cwd(), program.opts<GlobalOpts>().dir);
   if (levels > 0) console.error(`${tag()} no code map here: answering from ${contextDirFor(root, program.opts<GlobalOpts>().dir)}`);
   return root;
+}
+
+/**
+ * Validates that `dir` is an existing directory, then returns its absolute path.
+ * Exits with a one-line error on stderr and code 1 when the path is missing or
+ * is not a directory — matching the `✗ …` + `process.exit(1)` convention used by
+ * other early-exit guards in this file (e.g. `--tabs`, `--max-dirs`).
+ */
+function requireRootDir(dir: string): string {
+  const problem = rootProblem(dir);
+  if (problem === "missing") {
+    console.error(`✗ root does not exist: ${resolve(dir)}`);
+    process.exit(1);
+  }
+  if (problem === "not-dir") {
+    console.error(`✗ root is not a directory: ${resolve(dir)}`);
+    process.exit(1);
+  }
+  return resolve(dir);
 }
 
 /**
@@ -490,6 +509,7 @@ grouped(program.command("build"), GROUP.setup)
       await runCheckCommand(command.args[0], { extensions: opts.extensions, json: opts.json }, cmd("graft check"));
       return;
     }
+    requireRootDir(dir);
     const buildStartedAt = Date.now();
     if (opts.gitignore === false) process.env.GRAFT_NO_GITIGNORE = "1";
     if (opts.ignore === false) process.env.GRAFT_NO_IGNORE = "1";
@@ -1305,6 +1325,7 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: { mappe
       for (const id of SUPPORTED_AGENTS) console.log(id);
       return null;
     }
+    requireRootDir(dir);
     const repo = resolve(dir);
     // `--agents auto`: the website's one setup prompt, run by an agent with no one to ask.
     const asked = Array.isArray(opts.agents) ? opts.agents : undefined;
@@ -1654,6 +1675,7 @@ grouped(program.command("uninstall"), GROUP.setup)
   .option("--keep-cache", "keep graft/ and the .gitignore entries: wiring only")
   .option("--no-global", "leave out-of-repo files alone (~/.codex, ~/.gemini)")
   .action((dir: string, opts: { yes?: boolean; keepCache?: boolean; global?: boolean }) => {
+    requireRootDir(dir);
     const repo = resolve(dir);
     const home = homedir();
     const common = { home, global: opts.global, cache: opts.keepCache ? false : true };

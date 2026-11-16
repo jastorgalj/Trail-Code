@@ -13,7 +13,7 @@
  * would report the same context dir and the walk would answer "level 0" for a
  * dir that isn't the repo.
  */
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { contextDirFor } from "../context/node-file.js";
 import { wiringPath } from "./write.js";
@@ -41,5 +41,27 @@ export function nearestGraftRoot(start: string, override?: string): RootResoluti
     const up = dirname(dir);
     if (up === dir) return { root: from, levels: 0 }; // hit the filesystem root, nothing indexed
     dir = up;
+  }
+}
+
+/**
+ * Checks whether `dir` is a valid directory root before any effect runs.
+ * - `"missing"`:  the path does not exist (stat raises ENOENT or ENOTDIR from path traversal).
+ * - `"not-dir"`:  the path exists but is not a directory (file, pipe, …).
+ * - `null`:       the path is a valid directory, or stat raised an unexpected error
+ *                 (e.g. EACCES) — preserve today's behavior and let the command
+ *                 surface its own error.
+ *
+ * Uses `statSync` (follows symlinks) so a symlink-to-directory is accepted.
+ * Note: EACCES is not portable on Windows and is documented as not tested.
+ */
+export function rootProblem(dir: string): "missing" | "not-dir" | null {
+  try {
+    const st = statSync(resolve(dir));
+    return st.isDirectory() ? null : "not-dir";
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return "missing";
+    return null;
   }
 }
