@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import { embedNodes, searchSemantic } from '../ask/semantic.js';
 import { canonicalToolName } from './tool-names.js';
 import { cmd } from '../brand.js';
+import { validateToolArgs } from './validate-args.js';
 
 export interface ToolDef {
   name: string;
@@ -47,13 +48,14 @@ function unknownSymbolText(query: string): string {
 export const TOOLS: ToolDef[] = [
   {
     name: 'trail_set_scope',
-    description: 'Set the default scope for all subsequent trail queries in this session. Call once at session start with the current working directory. All trail_find_code, trail_search_semantic, trail_trace_calls and trail_find_all calls will automatically narrow to this path without needing an explicit `in` parameter.',
+    description: 'Set the default scope for all subsequent trail queries in this session. Call once at session start with the current working directory. All trail_find_code, trail_search_semantic, trail_trace_calls and trail_find_all calls will automatically narrow to this path without needing an explicit `in` parameter. The scope is held by the server process and shared by every client connected to it; the last call wins.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absolute path of the current project/workspace (e.g. C:/Users/user/Desarrollo/default-core/frontend). The server computes the relative scope automatically.' },
+        path: { type: 'string', description: 'Absolute path of the current project/workspace (e.g. /path/to/project). The server computes the relative scope automatically.' },
       },
       required: ['path'],
+      additionalProperties: false,
     },
   },
   {
@@ -75,6 +77,7 @@ export const TOOLS: ToolDef[] = [
         },
       },
       required: ['query'],
+      additionalProperties: false,
     },
   },
   {
@@ -87,12 +90,13 @@ export const TOOLS: ToolDef[] = [
         file: { type: 'string', description: 'repo-relative path (or unique basename) of the file' },
       },
       required: ['file'],
+      additionalProperties: false,
     },
   },
   {
     name: 'trail_check_freshness',
     description: 'Report whether the committed graph is in sync with the code (drift check).',
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'trail_build',
@@ -103,6 +107,7 @@ export const TOOLS: ToolDef[] = [
         include_md: { type: 'boolean', description: 'Index .md files as nodes (headings → symbols). Persists for future builds.' },
         semantic: { type: 'boolean', description: 'Rebuild the semantic (embedding) index. Default true.' },
       },
+      additionalProperties: false,
     },
   },
   {
@@ -122,6 +127,7 @@ export const TOOLS: ToolDef[] = [
         in: { type: 'string', description: 'narrow matches to nodes at or under this repo-relative path prefix, e.g. server/src' },
       },
       required: ['symbol'],
+      additionalProperties: false,
     },
   },
   {
@@ -137,6 +143,7 @@ export const TOOLS: ToolDef[] = [
         fixed: { type: 'boolean', description: 'treat pattern as a literal string, not a regex' },
       },
       required: ['pattern'],
+      additionalProperties: false,
     },
   },
   {
@@ -148,6 +155,7 @@ export const TOOLS: ToolDef[] = [
       properties: {
         max_dirs: { type: 'number', description: 'max directory entries shown, rest counted into dropped (default 16)' },
       },
+      additionalProperties: false,
     },
   },
   {
@@ -158,9 +166,10 @@ export const TOOLS: ToolDef[] = [
       properties: {
         query: { type: 'string', description: 'plain-language description of what you are looking for' },
         limit: { type: 'number', description: 'max results (default 5)' },
-        in: { type: 'string', description: 'narrow to a specific repo or path prefix, e.g. "default-core/frontend" or "default-core" — searches only children whose path starts with this prefix' },
+        in: { type: 'string', description: 'narrow to a specific repo or path prefix, e.g. "packages/api" or "packages" — searches only children whose path starts with this prefix' },
       },
       required: ['query'],
+      additionalProperties: false,
     },
   },
 ];
@@ -199,7 +208,7 @@ async function callWorkspaceTool(
   switch (name) {
     case 'graft_find_code': {
       const query = String(args.query ?? '');
-      if (!query) return { text: 'graft_find_code requires a query', isError: true };
+      if (!query) return { text: 'trail_find_code requires a non-empty "query"', isError: true };
       const limit = typeof args.limit === 'number' ? args.limit : 5;
       const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
       const r = federateAsk(root, dirOverride, query, { limit, source: true, full: args.full === true, in: inArg });
@@ -207,7 +216,7 @@ async function callWorkspaceTool(
     }
     case 'graft_trace_calls': {
       const symbol = String(args.symbol ?? args.file ?? '');
-      if (!symbol) return { text: 'graft_trace_calls requires a symbol', isError: true };
+      if (!symbol) return { text: 'trail_trace_calls requires a non-empty "symbol"', isError: true };
       const { text, found } = federateCallers(root, dirOverride, symbol, {
         direction: args.direction === 'out' ? 'out' : 'in',
         depth: typeof args.depth === 'number' && Number.isFinite(args.depth) ? args.depth : undefined,
@@ -217,7 +226,7 @@ async function callWorkspaceTool(
     }
     case 'graft_find_all': {
       const pattern = String(args.pattern ?? '');
-      if (!pattern) return { text: 'graft_find_all requires a pattern', isError: true };
+      if (!pattern) return { text: 'trail_find_all requires a non-empty "pattern"', isError: true };
       const { result, coverage } = federateGrep(root, dirOverride, pattern, {
         ignoreCase: typeof args.ignore_case === 'boolean' ? args.ignore_case : undefined,
         fixed: typeof args.fixed === 'boolean' ? args.fixed : undefined,
@@ -235,7 +244,7 @@ async function callWorkspaceTool(
     }
     case 'graft_search_semantic': {
       const query = String(args.query ?? '');
-      if (!query) return { text: 'graft_search_semantic requires a query', isError: true };
+      if (!query) return { text: 'trail_search_semantic requires a non-empty "query"', isError: true };
       const limit = typeof args.limit === 'number' ? args.limit : 5;
       const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
       const { text, isError } = await federateSemantic(root, dirOverride, query, limit, inArg);
@@ -261,6 +270,12 @@ const NO_REFRESH_TOOLS = new Set(['graft_check_freshness']);
  */
 export { canonicalToolName };
 
+/** Find the ToolDef for any accepted name (trail_*, graft_*, legacy aliases). */
+export function findTool(requestedName: string): ToolDef | undefined {
+  const canonical = canonicalToolName(requestedName);
+  return TOOLS.find((t) => canonicalToolName(t.name) === canonical);
+}
+
 export async function callTool(
   root: string,
   requestedName: string,
@@ -269,6 +284,19 @@ export async function callTool(
 ): Promise<{ text: string; isError: boolean }> {
   try {
     const name = canonicalToolName(requestedName);
+    // Resolve definition — unknown names are rejected before touching disk.
+    const def = findTool(requestedName);
+    if (!def) {
+      return {
+        text: `unknown tool "${requestedName}"; available: ${TOOLS.map((t) => t.name).join(', ')}`,
+        isError: true,
+      };
+    }
+    // Validate args before reading workspace or refreshing graph (design D2).
+    const validation = validateToolArgs(def, args as unknown);
+    if (!validation.ok) {
+      return { text: validation.text, isError: true };
+    }
     const ws = readWorkspace(root, dirOverride);
     // Freshness first: an answer that cites file:line has to be about the code as
     // it is right now, including edits nobody has committed (or even saved through
@@ -301,7 +329,7 @@ async function callSingleTool(
   switch (name) {
       case 'graft_find_code': {
         const query = String(args.query ?? '');
-        if (!query) return { text: 'graft_find_code requires a query', isError: true };
+        if (!query) return { text: 'trail_find_code requires a non-empty "query"', isError: true };
         const limit = typeof args.limit === 'number' ? args.limit : 5;
         const engine = new Graft({ contextDir: dirOverride });
         const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
@@ -314,7 +342,7 @@ async function callSingleTool(
       }
       case 'graft_file_api': {
         const file = String(args.file ?? '');
-        if (!file) return { text: 'graft_file_api requires a file', isError: true };
+        if (!file) return { text: 'trail_file_api requires a non-empty "file"', isError: true };
         const r = skeleton(root, file, { contextDir: dirOverride });
         return { text: formatSkeleton(r), isError: !r.entries.length && !!r.note };
       }
@@ -326,7 +354,7 @@ async function callSingleTool(
         if (!g.missing) parts.push(formatGraphCheckReport(g));
         return { text: parts.join('\n\n'), isError: false };
       }
-      case 'trail_build': {
+      case 'graft_build': {
         // Spawn trail build as a detached background process.
         const { spawn: _spawn } = await import('node:child_process');
         const { graftCliPath } = await import('../claude/paths.js');
@@ -354,7 +382,7 @@ async function callSingleTool(
         // it, so dependents that call into a symbol (targeting the SYMBOL id,
         // never the FILE id) aren't silently dropped.
         const symbol = String(args.symbol ?? args.file ?? '');
-        if (!symbol) return { text: 'graft_trace_calls requires a symbol', isError: true };
+        if (!symbol) return { text: 'trail_trace_calls requires a non-empty "symbol"', isError: true };
         const w = loadGraphCached(contextDirFor(root, dirOverride));
         if (!w) return { text: noGraph(), isError: true };
         const inOpt = typeof args.in === 'string' && args.in ? { in: args.in } : {};
@@ -377,7 +405,7 @@ async function callSingleTool(
       }
       case 'graft_find_all': {
         const pattern = String(args.pattern ?? '');
-        if (!pattern) return { text: 'graft_find_all requires a pattern', isError: true };
+        if (!pattern) return { text: 'trail_find_all requires a non-empty "pattern"', isError: true };
         const w = loadGraphCached(contextDirFor(root, dirOverride));
         if (!w) return { text: noGraph(), isError: true };
         const result = grepGraph(w, root, pattern, {
@@ -398,7 +426,7 @@ async function callSingleTool(
       case 'trail_search_semantic':
       case 'graft_search_semantic': {
         const query = String(args.query ?? '');
-        if (!query) return { text: 'graft_search_semantic requires a query', isError: true };
+        if (!query) return { text: 'trail_search_semantic requires a non-empty "query"', isError: true };
         const limit = typeof args.limit === 'number' ? args.limit : 5;
         const contextDir = contextDirFor(root, dirOverride);
 
@@ -426,6 +454,9 @@ async function callSingleTool(
         return { text: lines.join('\n\n'), isError: false };
       }
     default:
+      if (name === 'graft_set_scope') {
+        return { text: 'trail_set_scope is handled by the MCP server, not by callTool', isError: true };
+      }
       return { text: `unknown tool: ${name}`, isError: true };
   }
 }

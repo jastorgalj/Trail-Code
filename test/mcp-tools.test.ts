@@ -178,7 +178,7 @@ test('graft_trace_calls: unknown symbol / missing symbol are soft isErrors', asy
 
   const r2 = await callTool(d, 'graft_trace_calls', {});
   assert.equal(r2.isError, true);
-  assert.match(r2.text, /requires a symbol/);
+  assert.match(r2.text, /missing required argument "symbol"/);
 });
 
 test('graft_trace_calls: depth param is honored (depth 2 reaches further than depth 1)', async () => {
@@ -235,7 +235,7 @@ test('graft_find_all: missing pattern and unbuilt repo are soft errors', async (
   const d = builtRepo();
   const r1 = await callTool(d, 'graft_find_all', {});
   assert.equal(r1.isError, true);
-  assert.match(r1.text, /requires a pattern/);
+  assert.match(r1.text, /missing required argument "pattern"/);
 
   const bare = mkdtempSync(join(tmpdir(), 'graft-mcptools-grep-bare-'));
   const r2 = await callTool(bare, 'graft_find_all', { pattern: 'add' });

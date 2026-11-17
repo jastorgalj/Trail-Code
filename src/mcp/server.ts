@@ -5,7 +5,7 @@
  */
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { TOOLS, callTool } from './tools.js';
+import { TOOLS, callTool, findTool } from './tools.js';
 import { mcpInstructions } from './instructions.js';
 import { hasGraftIndex } from '../graph/root.js';
 import { mainWorktreeRoot } from '../graph/seed.js';
@@ -14,6 +14,7 @@ import { runningVersion } from '../upkeep.js';
 import { maybeFlushInBackground, track } from '../telemetry/index.js';
 import { brand, inBrand } from '../brand.js';
 import { canonicalToolName, GRAFT_MCP_TOOL_NAMES } from './tool-names.js';
+import { validateToolArgs } from './validate-args.js';
 
 const TOOL_COMMAND: Record<string, string> = {
   graft_find_code: 'ask',
@@ -95,7 +96,16 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
           reply(id, { content: [{ type: 'text', text: `this server answers local graph tools only; ${name} isn't one` }], isError: true });
           return;
         }
-        if (canonicalToolName(name) === 'trail_set_scope') {
+        if (canonicalToolName(name) === 'graft_set_scope') {
+          // Validate before touching clientRoot (task 3.1).
+          const def = findTool(name);
+          if (def) {
+            const validation = validateToolArgs(def, args);
+            if (!validation.ok) {
+              reply(id, { content: [{ type: 'text', text: validation.text }], isError: true });
+              return;
+            }
+          }
           const p = String(args['path'] ?? '').replace(/\\/g, '/').replace(/\/$/, '');
           const srv = root.replace(/\\/g, '/').replace(/\/$/, '');
           if (p.startsWith(srv + '/')) {
@@ -106,7 +116,8 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
           }
           return;
         }
-        const argsWithScope = injectClientScope(args, root, clientRoot);
+        const def = findTool(name);
+        const argsWithScope = injectClientScope(def, args, root, clientRoot);
         callTool(root, name, argsWithScope, dirOverride).then(
           (r) => {
             const canonical = canonicalToolName(name);
@@ -125,7 +136,18 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
   process.stdin.on('end', () => process.exit(0));
 }
 
-function injectClientScope(args: Record<string, unknown>, serverRoot: string, clientRoot: string | null): Record<string, unknown> {
+function injectClientScope(
+  def: { inputSchema: object } | undefined,
+  args: Record<string, unknown>,
+  serverRoot: string,
+  clientRoot: string | null,
+): Record<string, unknown> {
+  // Don't inject into non-object args (e.g. an array sent by a buggy client).
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) return args;
+  // Don't inject `in` if the tool's schema doesn't declare it (design D4).
+  if (!def) return args;
+  const props = (def.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
+  if (!('in' in props)) return args;
   if (args['in'] != null || !clientRoot) return args;
   const server = serverRoot.replace(/\\/g, '/').replace(/\/$/, '');
   const client = clientRoot.replace(/\\/g, '/').replace(/\/$/, '');
