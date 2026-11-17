@@ -143,7 +143,6 @@ export function runWorkspaceGrep(
     return;
   }
   process.stdout.write(formatGrepResult(result));
-  if (coverage) console.log(coverage);
 }
 
 export function runWorkspaceMap(

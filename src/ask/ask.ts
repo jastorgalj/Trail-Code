@@ -17,7 +17,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { matter } from "../util/front-matter.js";
 import { contextDirFor } from "../context/node-file.js";
-import { withSavings, savingsFor, savingsTurnNudge, type Savings } from "../context/savings.js";
+import { withSavings, savingsFor, savingsDollarSuffix, type Savings } from "../context/savings.js";
 import { loadGraphCached, loadAskIndexCached } from "../graph/load.js";
 import {
   assertPrefixIndexed,
@@ -1581,10 +1581,10 @@ function askSavingsLine(r: AskResult, body: string): string {
   const base = toTokens(r.saved.baselineChars);
   const pct = Math.round((saved / base) * 100);
   return (
-    `${tag()} tokens saved ≈ ${saved.toLocaleString()} (${pct}%) — this pack ≈ ` +
-    `${pack.toLocaleString()} tok vs reading the ${r.saved.files} source file(s) whole ≈ ` +
-    `${base.toLocaleString()} tok. Estimate (baseline = those files read in full).` +
-    savingsTurnNudge(saved)
+    `${tag()} tokens saved ≈ ${saved.toLocaleString('en-US')} (${pct}%) — this pack ≈ ` +
+    `${pack.toLocaleString('en-US')} tok vs reading the ${r.saved.files} source file(s) whole ≈ ` +
+    `${base.toLocaleString('en-US')} tok. Estimate (baseline = those files read in full).` +
+    savingsDollarSuffix(saved)
   );
 }
 
