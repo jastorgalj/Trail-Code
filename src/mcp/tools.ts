@@ -59,7 +59,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'trail_find_code',
     description:
-      'Query the repo context graph in plain words. Returns ranked nodes with exact file:line spans and the relevant source inlined — usually the full answer, no file reads needed.',
+      'Query the repo context graph in plain words using lexical and structural analysis (no embeddings). Returns ranked nodes with exact file:line spans and the relevant source inlined — usually the full answer, no file reads needed. The header (lexical) in the response is expected. For meaning-based search, use trail_search_semantic instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -152,7 +152,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'trail_search_semantic',
-    description: 'Semantic (embedding-based) search over the code graph — finds nodes by meaning, not just keywords. Best for specs and docs (.md); for code symbols use trail_find_code instead.',
+    description: 'Semantic (embedding-based) search over the code graph — finds nodes by meaning, not just keywords. In a workspace, searches the embeddings index of each child repo (created by trail_build). Best for specs and docs (.md); for code symbols use trail_find_code instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -237,7 +237,8 @@ async function callWorkspaceTool(
       const query = String(args.query ?? '');
       if (!query) return { text: 'graft_search_semantic requires a query', isError: true };
       const limit = typeof args.limit === 'number' ? args.limit : 5;
-      const { text, isError } = await federateSemantic(root, dirOverride, query, limit);
+      const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
+      const { text, isError } = await federateSemantic(root, dirOverride, query, limit, inArg);
       return { text, isError };
     }
     default:
@@ -399,43 +400,7 @@ async function callSingleTool(
         const query = String(args.query ?? '');
         if (!query) return { text: 'graft_search_semantic requires a query', isError: true };
         const limit = typeof args.limit === 'number' ? args.limit : 5;
-        const inPrefix = typeof args.in === 'string' && args.in ? args.in.replace(/\/$/, '') : null;
         const contextDir = contextDirFor(root, dirOverride);
-
-        // Workspace: federate semantic search across children's embedding DBs.
-        // When `in` is specified, only search children whose path starts with the prefix.
-        const ws = readWorkspace(root, dirOverride);
-        if (ws && ws.children.length > 0) {
-          const { join: pjoin } = await import('node:path');
-          const { existsSync: pExists } = await import('node:fs');
-          const allHits: Awaited<ReturnType<typeof searchSemantic>> = [];
-          const children = inPrefix
-            ? ws.children.filter(c => c === inPrefix || c.startsWith(inPrefix + '/'))
-            : ws.children;
-          if (inPrefix && children.length === 0) {
-            return { text: `no workspace repos match "in=${inPrefix}" — available: ${ws.children.slice(0, 5).join(', ')}`, isError: true };
-          }
-          for (const child of children) {
-            const childRoot = pjoin(root, child);
-            const childCtx = contextDirFor(childRoot);
-            const childDb = pjoin(childCtx, '.cache', 'embeddings.db');
-            if (!pExists(childDb)) continue;
-            try {
-              const childHits = await searchSemantic(query, childDb, limit);
-              for (const h of childHits) {
-                allHits.push({ ...h, file_path: h.file_path.startsWith(child) ? h.file_path : `${child}/${h.file_path}` });
-              }
-            } catch { /* child DB not ready — skip */ }
-          }
-          if (allHits.length === 0) return { text: 'no semantic matches found', isError: false };
-          const sorted = allHits.sort((a, b) => b.score - a.score).slice(0, limit);
-          const filtered = sorted.filter(h => h.score > 0.01);
-          if (filtered.length === 0) return { text: 'no semantic matches found — try trail_find_code for lexical search', isError: false };
-          const lines = filtered.map((h, i) =>
-            `${i + 1}. ${h.file_path} · ${h.symbol}  (score: ${h.score.toFixed(3)})\n   ${h.snippet}`
-          );
-          return { text: lines.join('\n\n'), isError: false };
-        }
 
         // Single repo: search directly.
         const w = loadGraphCached(contextDir);
