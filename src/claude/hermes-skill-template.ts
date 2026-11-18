@@ -63,7 +63,7 @@ Las 9 tools: \`trail_set_scope\`, \`trail_find_code\`, \`trail_file_api\`,
 | \`trail_search_semantic\` | Búsqueda conceptual | **Solo specs/docs** en lenguaje natural (.md) |
 | \`trail_check_freshness\` | Estado del índice | ¿El mapa coincide con el working tree? |
 | \`trail_build\` | Rebuild en background | Reconstruir grafo + índice semántico |
-| \`trail_set_scope\` | Fijar scope de sesión | Acotar todas las consultas a un subtree del workspace |
+| \`trail_set_scope\` | Resolver el scope | Devuelve el \`in\` que hay que pasar en cada consulta acotada |
 
 > **Regla del semántico**: \`trail_search_semantic\` embebe lenguaje natural, así que
 > rinde en \`.md\` (specs, docs, cartas de sistema) y aporta poco en código.

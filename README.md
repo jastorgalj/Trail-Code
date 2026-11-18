@@ -277,7 +277,7 @@ With no TTY to prompt on (CI, a Dockerfile, a piped shell), `init` writes **noth
 | `trail_check_freshness` | nothing | Whether the local map has drifted from the code. |
 | `trail_search_semantic` | a question | Vector search over the semantic index: prose, specs and docs; in a workspace, searches the index of each child repo. **Added by this fork.** |
 | `trail_build` | nothing | Rebuild graph + semantic index in the background. |
-| `trail_set_scope` | a path | Pin later queries to one subtree of a workspace. |
+| `trail_set_scope` | a path | Resolve it to the `in` value to pass on each narrowed query — the server stores no scope. |
 
 The same server answers the `graft_*` tool names too. A JSON host (Claude Code's `.mcp.json`, Cursor, Antigravity):
 

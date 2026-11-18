@@ -496,10 +496,11 @@ test('Scenario: descripciones sin rutas de un workspace concreto', () => {
   }
 });
 
-test('Scenario: la descripción de trail_set_scope avisa del alcance compartido', () => {
+test('Scenario: la descripción de trail_set_scope no promete estado de sesión', () => {
   const def = TOOLS.find((t) => t.name === 'trail_set_scope');
   assert.ok(def, 'trail_set_scope should be in TOOLS');
-  assert.match(def!.description, /shared by every client connected to it/);
+  assert.match(def!.description, /keeps no session scope/);
+  assert.doesNotMatch(def!.description, /subsequent trail queries in this session/);
 });
 
 // ── Requirement: callTool no atiende set_scope ───────────────────────────────
@@ -561,7 +562,7 @@ test('Scenario: set_scope con paths en vez de path — stdio', async () => {
   );
 });
 
-test('Scenario: set_scope válido fija el scope — stdio', async () => {
+test('Scenario: set_scope válido devuelve el in a pasar — stdio', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-args-srv2-'));
   mkdirSync(join(dir, 'src'), { recursive: true });
   const rs = await rpc(
@@ -575,7 +576,49 @@ test('Scenario: set_scope válido fija el scope — stdio', async () => {
   );
   const call = rs.find((r: any) => r.id === 2);
   assert.equal(call.result.isError, false);
-  assert.match(call.result.content[0].text, /scope set to: src/);
+  assert.match(call.result.content[0].text, /pass in: "src"/);
+});
+
+test('Scenario: set_scope con la raíz del workspace devuelve el workspace completo — stdio', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-args-srv-root-'));
+  const rs = await rpc(
+    [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '0' } } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'trail_set_scope', arguments: { path: dir.replace(/\\/g, '/') + '/' } } },
+    ],
+    dir,
+    2,
+  );
+  const call = rs.find((r: any) => r.id === 2);
+  assert.equal(call.result.isError, false, 'the workspace root must be accepted, so a scope can be cleared');
+  assert.match(call.result.content[0].text, /scope: whole workspace/);
+});
+
+test('Scenario: set_scope de un cliente no acota la consulta siguiente — stdio', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-args-nostat-scope-'));
+  mkdirSync(join(dir, 'src'), { recursive: true });
+  mkdirSync(join(dir, 'lib'), { recursive: true });
+  writeFileSync(join(dir, 'src', 'a.ts'), 'export function alpha(): number {\n  return 1;\n}\n');
+  writeFileSync(join(dir, 'lib', 'b.ts'), 'export function beta(): number {\n  return 2;\n}\n');
+  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', dir], { stdio: 'pipe' });
+  const rs = await rpc(
+    [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '0' } } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      // Client A pins the scope to src/ ...
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'trail_set_scope', arguments: { path: join(dir, 'src').replace(/\\/g, '/') } } },
+      // ... and a query from any client still sees the whole workspace.
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'trail_find_all', arguments: { pattern: 'beta' } } },
+    ],
+    dir,
+    3,
+  );
+  const set = rs.find((r: any) => r.id === 2);
+  const grep = rs.find((r: any) => r.id === 3);
+  assert.equal(set.result.isError, false, 'set_scope should succeed');
+  assert.match(grep.result.content[0].text, /lib\/b\.ts/,
+    'a query must not inherit the scope set by another client');
 });
 
 test('Scenario: set_scope con path de tipo inválido — stdio', async () => {
@@ -597,7 +640,7 @@ test('Scenario: set_scope con path de tipo inválido — stdio', async () => {
   );
 });
 
-test('Scenario: set_scope rechazado no cambia el scope — stdio', async () => {
+test('Scenario: set_scope rechazado no deja rastro — stdio', async () => {
   const dir = builtRepo();
   const srcPath = join(dir, 'src').replace(/\\/g, '/');
   const rs = await rpc(
@@ -660,7 +703,7 @@ test('Scenario: build con include_md como string se rechaza — stdio', async ()
   );
 });
 
-test('Scenario: tras fijar scope, una tool sin `in` sigue funcionando — stdio', async () => {
+test('Scenario: tras set_scope, una tool sin `in` sigue funcionando — stdio', async () => {
   const dir = builtRepo();
   const srcPath = join(dir, 'src').replace(/\\/g, '/');
   const rs = await rpc(

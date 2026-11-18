@@ -52,11 +52,11 @@ function unknownSymbolText(query: string): string {
 export const TOOLS: ToolDef[] = [
   {
     name: 'trail_set_scope',
-    description: 'Set the default scope for all subsequent trail queries in this session. Call once at session start with the current working directory. All trail_find_code, trail_search_semantic, trail_trace_calls and trail_find_all calls will automatically narrow to this path without needing an explicit `in` parameter. The scope is held by the server process and shared by every client connected to it; the last call wins.',
+    description: 'Resolve a workspace path into the `in` value that narrows trail_find_code, trail_search_semantic, trail_trace_calls and trail_find_all to one subtree. The server keeps no session scope: nothing is remembered between calls, so the returned `in` must be passed on every call you want narrowed (a shared server cannot tell one client from another). Pass the workspace root to get the whole-workspace answer, i.e. omit `in`.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absolute path of the current project/workspace (e.g. /path/to/project). The server computes the relative scope automatically.' },
+        path: { type: 'string', description: 'Absolute path of the subtree to narrow to (e.g. /path/to/project/src). The workspace root itself means "whole workspace".' },
       },
       required: ['path'],
       additionalProperties: false,

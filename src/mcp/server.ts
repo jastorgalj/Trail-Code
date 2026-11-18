@@ -4,7 +4,6 @@
  * Cloud/workspace connector removed (trail-solo-grafo change).
  */
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
 import { TOOLS, callTool, findTool } from './tools.js';
 import { mcpInstructions } from './instructions.js';
 import { hasGraftIndex } from '../graph/root.js';
@@ -52,7 +51,6 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
     (brainsOnly ? [] : advertised(root, dirOverride)).map((t) => ({ name: inBrand(t.name), description: inBrand(t.description), inputSchema: t.inputSchema }));
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  let clientRoot: string | null = null;
   rl.on('line', (line) => {
     const text = line.trim();
     if (!text) return;
@@ -62,10 +60,9 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
     const isNotification = id === undefined;
     switch (method) {
       case 'initialize': {
-        const roots = params?.roots as Array<{ uri?: string }> | undefined;
-        if (roots?.[0]?.uri) {
-          try { clientRoot = fileURLToPath(roots[0].uri); process.stderr.write(`[trail-scope] clientRoot from roots: ${clientRoot}\n`); } catch { /* non-file URI */ }
-        }
+        // No per-session state: behind a stateless proxy every client's
+        // `initialize` reaches the same process, which cannot tell them apart,
+        // so a client's `roots` must not become another client's query scope (#20).
         const local = [upkeep.length ? upkeep.join('\n') : '', brainsOnly ? '' : mcpInstructions()];
         reply(id, { protocolVersion: params?.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: brand(), version }, instructions: local.filter(Boolean).join('\n\n') });
         return;
@@ -97,7 +94,6 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
           return;
         }
         if (canonicalToolName(name) === 'graft_set_scope') {
-          // Validate before touching clientRoot (task 3.1).
           const def = findTool(name);
           if (def) {
             const validation = validateToolArgs(def, args);
@@ -106,19 +102,12 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
               return;
             }
           }
-          const p = String(args['path'] ?? '').replace(/\\/g, '/').replace(/\/$/, '');
-          const srv = root.replace(/\\/g, '/').replace(/\/$/, '');
-          if (p.startsWith(srv + '/')) {
-            clientRoot = String(args['path'] ?? '');
-            reply(id, { content: [{ type: 'text', text: `scope set to: ${p.slice(srv.length + 1)} — all queries will narrow to this path automatically` }], isError: false });
-          } else {
-            reply(id, { content: [{ type: 'text', text: `path "${p}" is not under the server workspace "${srv}" — scope unchanged` }], isError: true });
-          }
+          const scope = resolveScope(root, args['path']);
+          reply(id, { content: [{ type: 'text', text: scope.text }], isError: !scope.ok });
           return;
         }
         const def = findTool(name);
-        const argsWithScope = injectClientScope(def, args, root, clientRoot);
-        callTool(root, name, argsWithScope, dirOverride).then(
+        callTool(root, name, args, dirOverride).then(
           (r) => {
             const canonical = canonicalToolName(name);
             const command = Object.hasOwn(TOOL_COMMAND, canonical) ? TOOL_COMMAND[canonical] : undefined;
@@ -136,21 +125,25 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
   process.stdin.on('end', () => process.exit(0));
 }
 
-function injectClientScope(
-  def: { inputSchema: object } | undefined,
-  args: Record<string, unknown>,
-  serverRoot: string,
-  clientRoot: string | null,
-): Record<string, unknown> {
-  // Don't inject into non-object args (e.g. an array sent by a buggy client).
-  if (typeof args !== 'object' || args === null || Array.isArray(args)) return args;
-  // Don't inject `in` if the tool's schema doesn't declare it (design D4).
-  if (!def) return args;
-  const props = (def.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
-  if (!('in' in props)) return args;
-  if (args['in'] != null || !clientRoot) return args;
-  const server = serverRoot.replace(/\\/g, '/').replace(/\/$/, '');
-  const client = clientRoot.replace(/\\/g, '/').replace(/\/$/, '');
-  if (!client.startsWith(server + '/') || client === server) return args;
-  return { ...args, in: client.slice(server.length + 1) };
+/**
+ * Resolve `path` into the `in` value the caller must pass on each query.
+ *
+ * Deliberately stateless: the server may be one process behind a stateless
+ * stdio→HTTP proxy shared by several agents, and nothing in the JSON-RPC stream
+ * identifies the client. Any stored scope would leak across clients, so
+ * `trail_set_scope` only computes the value and hands it back (#20).
+ */
+function resolveScope(serverRoot: string, pathArg: unknown): { text: string; ok: boolean } {
+  const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const srv = norm(String(serverRoot));
+  const p = norm(String(pathArg ?? ''));
+  const suffix = 'this server keeps no per-session scope, so the value must travel in each call';
+  if (p === srv || p === '') {
+    return { ok: true, text: `scope: whole workspace — omit "in" on every call (${suffix})` };
+  }
+  if (!p.startsWith(srv + '/')) {
+    return { ok: false, text: `path "${p}" is not under the server workspace "${srv}" — no scope resolved` };
+  }
+  const rel = p.slice(srv.length + 1);
+  return { ok: true, text: `scope: ${rel} — pass in: "${rel}" on each call you want narrowed to it (${suffix})` };
 }

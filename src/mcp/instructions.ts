@@ -51,7 +51,7 @@ export function mcpInstructions(): string {
     '',
     `**Deferred (bare names, no schemas)? Load all in ONE lookup:** ToolSearch "${toolSearchQuery()}" — one round trip, not one call per use.`,
     '',
-    '- graft_set_scope — set the session scope once',
+    '- graft_set_scope — resolve a path to the `in` value to repeat on narrowed queries',
     '- graft_find_code — where/how is X; ranked hits (lexical + structural, no embeddings)',
     '- graft_find_all — every occurrence',
     '- graft_trace_calls — callers, callees, blast radius',
