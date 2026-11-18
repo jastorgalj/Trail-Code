@@ -75,7 +75,7 @@ tools. Use whichever surface is available; the guidance above is identical.
 | \`trail_search_semantic\` | Concepts in prose (\`.md\` specs, docs). NOT for code symbols |
 | \`trail_check_freshness\` | Is the map in sync with the working tree? |
 | \`trail_build\` | Rebuild graph + semantic index in the background |
-| \`trail_set_scope\` | Pin every later query to one subtree of the workspace |
+| \`trail_set_scope\` | Resolve a path to the \`in\` value to pass on each narrowed query |
 
 > **Semantic rule**: \`trail_search_semantic\` embeds natural language, so it earns
 > its keep on \`.md\` (specs, docs, system cards) and adds little for code. For a
