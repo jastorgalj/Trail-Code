@@ -54,6 +54,7 @@ import { homedir } from "node:os";
 import { formatUpgradeReport, formatVersionReport, getNpmViewVersion, readCurrentVersion, readPackageName, runUpgrade } from "./cli-meta.js";
 import { nativeFallbackNotice } from "./graph/native.js";
 import { patchBuildConfig, type BuildConfig } from "./util/state.js";
+import { startProgressLine } from "./util/progress-line.js";
 import { normalizePathPrefix } from "./util/paths.js";
 import { latestSession, formatSessionStats, sessionInputRate } from "./claude/session-metrics.js";
 import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
@@ -247,14 +248,19 @@ function requireRootDir(dir: string): string {
  * moved; a structural, $0 rebuild when it did. The note goes to stderr so `--json`
  * stdout stays machine-readable.
  */
-async function refreshBefore(dir: string, opts: { refresh?: boolean }): Promise<void> {
+async function refreshBefore(dir: string, opts: { refresh?: boolean; quiet?: boolean }): Promise<void> {
   const globalDir = program.opts<GlobalOpts>().dir;
   const root = resolve(dir);
   const disabled = opts.refresh === false;
   const ws = readWorkspace(root, globalDir);
+  // One line while a rebuild runs, one line after it: the difference between "it is
+  // working" and "it is hung", which is what an agent (or a person) had no way to
+  // tell before. Both go to stderr, so `--json` on stdout stays parseable; --quiet
+  // is for the scripts that don't want even that.
+  const onProgress = opts.quiet ? undefined : (line: string) => console.error(line);
   const r = ws
-    ? await ensureFreshChildren(root, ws.children, { contextDir: globalDir, disabled })
-    : await ensureFreshGraph(root, { contextDir: globalDir, disabled });
+    ? await ensureFreshChildren(root, ws.children, { contextDir: globalDir, disabled, onProgress })
+    : await ensureFreshGraph(root, { contextDir: globalDir, disabled, onProgress });
   const note = refreshNote(r);
   if (note) console.error(note);
 }
@@ -262,6 +268,10 @@ async function refreshBefore(dir: string, opts: { refresh?: boolean }): Promise<
 /** Attached to every query command: `--no-refresh` answers from the graph exactly
  * as it is on disk, no rebuild. */
 const NO_REFRESH_FLAG = ["--no-refresh", "skip the freshness check: answer from the graph as-is"] as const;
+
+/** Attached to every query command too: the refresh reports what it's doing on
+ * stderr, which is what a person wants and a script sometimes doesn't. */
+const QUIET_FLAG = ["--quiet", "no progress line while the graph refreshes (for scripts)"] as const;
 
 const VIZ_TABS = ["context", "code", "outline"] as const;
 type VizTab = (typeof VIZ_TABS)[number];
@@ -653,23 +663,27 @@ grouped(program.command("build"), GROUP.setup)
     }
 
     // --deep: concept nodes first, then the wiring graph links cards up to them.
+    // One redrawn line per pass instead of one line per file (`parsing 412/1,204
+    // files · 12s · src/…`): a few dozen frames on a 5,000-file build instead of
+    // 5,000 lines, and it reads as progress rather than scrollback. Silent when
+    // stderr isn't a TTY, so a piped or redirected build stays a clean log.
     let conceptErrors: string[] = [];
     let conceptFatal: string | undefined;
     if (deep) {
+      const conceptBar = startProgressLine();
       const c = await engine.init(dir, {
         extensions: opts.extensions,
         onlyDirs,
         synthConcurrency,
         onProgress: ({ phase, index, total, file }) =>
-          process.stderr.write(
-            `\r${phase === "summarize" ? "reading" : "writing"} concepts ${index + 1}/${total}: ${file.slice(0, 40).padEnd(40)}`,
-          ),
+          conceptBar.update(`${phase === "summarize" ? "reading" : "writing"} concepts`, index, total, file),
       }).catch((err: unknown) => {
         // Only the stage and a code enum; the message stays on this machine.
         track("build_failed", { stage: "summarize", code: errorCode(err) }, { repo: buildRoot });
+        conceptBar.stop();
         throw err;
       });
-      process.stderr.write("\n");
+      conceptBar.stop();
       const conceptLine = `concepts: ${c.nodes} nodes, ${c.links} links from ${c.files} files (${c.summarized} read, ${c.cached} cached)`;
       if (c.nodes === 0) console.error(`⚠ ${conceptLine}`);
       else console.log(`✓ ${conceptLine}`);
@@ -679,6 +693,7 @@ grouped(program.command("build"), GROUP.setup)
     }
 
     // Wiring graph — always; LLM meaning only with --deep.
+    const graphBar = startProgressLine();
     const g = await engine.graph(dir, {
       llm: deep,
       concurrency,
@@ -686,14 +701,13 @@ grouped(program.command("build"), GROUP.setup)
       lsp: opts.lsp,
       onlyDirs,
       onProgress: ({ phase, index, total, file }) =>
-        process.stderr.write(
-          `\r${phase === "enrich" ? "summarizing" : "parsing"} ${index + 1}/${total}: ${file.slice(0, 50).padEnd(50)}`,
-        ),
+        graphBar.update(phase === "enrich" ? "summarizing" : "parsing", index, total, file),
     }).catch((err: unknown) => {
       track("build_failed", { stage: "graph", code: errorCode(err) }, { repo: buildRoot });
+      graphBar.stop();
       throw err;
     });
-    process.stderr.write("\n");
+    graphBar.stop();
     console.log(`✓ wiring: ${g.nodes} nodes (${fmt(g.byKind)}), ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
     console.log(`  parsed: ${g.parsed} of ${g.files} files (${g.reused} replayed from cache)`);
     // Worth one line: this build started from a graph the user never built *here*.
@@ -800,7 +814,8 @@ grouped(program.command("ask"), GROUP.find)
   .option("--no-graph-rank", "rank by lexical relevance only, without the graph-connectivity re-rank (ablation/eval)")
   .option("--semantic", "use semantic (embedding) search instead of lexical — finds conceptually related code even without exact keywords; fallback when MCP trail_search_semantic is not available")
   .option(...NO_REFRESH_FLAG)
-  .action(async (query: string, dirArg: string | undefined, opts: { limit: string; source?: boolean; full?: boolean; in?: string; json?: boolean; refresh?: boolean; graphRank?: boolean; semantic?: boolean }) => {
+  .option(...QUIET_FLAG)
+  .action(async (query: string, dirArg: string | undefined, opts: { limit: string; source?: boolean; full?: boolean; in?: string; json?: boolean; refresh?: boolean; quiet?: boolean; graphRank?: boolean; semantic?: boolean }) => {
     // The prompt hook passes what the person typed on stdin, out of sight of `ps`.
     if (query === "-") query = readFileSync(0, "utf8").trim();
     const dir = noteQuery(queryRoot(dirArg));
@@ -877,7 +892,8 @@ grouped(program.command("skeleton"), GROUP.find)
   .argument(...DIR_ARG)
   .option("--json", "output the result as JSON")
   .option(...NO_REFRESH_FLAG)
-  .action(async (file: string, dirArg: string | undefined, opts: { json?: boolean; refresh?: boolean }) => {
+  .option(...QUIET_FLAG)
+  .action(async (file: string, dirArg: string | undefined, opts: { json?: boolean; refresh?: boolean; quiet?: boolean }) => {
     const dir = noteQuery(queryRoot(dirArg));
     await refreshBefore(dir, opts);
     const { skeleton, formatSkeleton } = await import("./ask/ask.js");
@@ -1149,11 +1165,12 @@ grouped(program.command("callers"), GROUP.find)
   .option("--in <path>", "narrow matches to nodes at or under this path prefix")
   .option("--json", "output as JSON")
   .option(...NO_REFRESH_FLAG)
+  .option(...QUIET_FLAG)
   .action(
     async (
       symbol: string,
       dirArg: string | undefined,
-      opts: { direction?: string; depth?: string; in?: string; json?: boolean; refresh?: boolean },
+      opts: { direction?: string; depth?: string; in?: string; json?: boolean; refresh?: boolean; quiet?: boolean },
     ) => {
       const dir = noteQuery(queryRoot(dirArg));
       await refreshBefore(dir, opts);
@@ -1194,7 +1211,8 @@ grouped(program.command("blast"), GROUP.ci)
   .option("--no-owners", "do not suggest who to tag (by default, git history names the people behind each affected area)")
   .option("--pr-author <who...>", "GitHub login, git name or email of the PR author, so they are left out of their own suggestions")
   .option(...NO_REFRESH_FLAG)
-  .action(async (dirArg: string | undefined, opts: { base?: string; depth?: string; format?: string; name?: boolean; exportViz?: string; title?: string; owners?: boolean; prAuthor?: string[]; refresh?: boolean }) => {
+  .option(...QUIET_FLAG)
+  .action(async (dirArg: string | undefined, opts: { base?: string; depth?: string; format?: string; name?: boolean; exportViz?: string; title?: string; owners?: boolean; prAuthor?: string[]; refresh?: boolean; quiet?: boolean }) => {
     const dir = noteQuery(queryRoot(dirArg));
     await refreshBefore(dir, opts);
     const { runBlastCommand } = await import("./blast/blast-cli.js");
@@ -1220,11 +1238,12 @@ grouped(program.command("grep"), GROUP.find)
   .option("--in <path>", "narrow to files at or under this path prefix")
   .option("--json", "output as JSON")
   .option(...NO_REFRESH_FLAG)
+  .option(...QUIET_FLAG)
   .action(
     async (
       pattern: string,
       dirArg: string | undefined,
-      opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; json?: boolean; refresh?: boolean },
+      opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; json?: boolean; refresh?: boolean; quiet?: boolean },
     ) => {
       const dir = noteQuery(queryRoot(dirArg));
       await refreshBefore(dir, opts);
@@ -1254,7 +1273,8 @@ grouped(program.command("map"), GROUP.find)
   .option("--max-dirs <n>", "max directory entries shown, rest counted into dropped (default 16)")
   .option("--json", "output as JSON")
   .option(...NO_REFRESH_FLAG)
-  .action(async (dirArg: string | undefined, opts: { json?: boolean; maxDirs?: string; refresh?: boolean }) => {
+  .option(...QUIET_FLAG)
+  .action(async (dirArg: string | undefined, opts: { json?: boolean; maxDirs?: string; refresh?: boolean; quiet?: boolean }) => {
     const dir = noteQuery(queryRoot(dirArg));
     const root = resolve(dir);
     const globalOpts = program.opts<{ dir?: string }>();
