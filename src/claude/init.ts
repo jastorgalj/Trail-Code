@@ -123,6 +123,8 @@ export interface InitResult {
   settingsPath: string;
   shims: string[];
   skill: string;
+  /** What happened to `skill`, so init reports the same `(created|updated|unchanged)` as every other file. Empty when no skill was written. */
+  skillAction: 'created' | 'updated' | 'unchanged' | '';
   mcp: McpWrite | null;
   global: GlobalWrite[];
   warnings: string[];
@@ -146,14 +148,28 @@ export function runInit(
   else warnings.push(notPlainJson('.claude/settings.json', "graft's settings"));
 
   const skillPath = skill;
-  writeFileSync(skillPath, skillTemplate('graft'));
+  const skillAction = writeSkill(skillPath, skillTemplate('graft'));
 
   const mcp = mergeJsonKey('claude', mcpTarget, 'mcpServers', serverEntry({ brand: 'graft' }), 'graft');
 
   const global = opts.global === false ? [] : installClaudeGlobal(opts.home ?? homedir(), 'graft');
 
   const built = buildGraphIfMissing(dir, opts);
-  return { settingsPath, shims: [], skill: skillPath, mcp, global, warnings, built };
+  return { settingsPath, shims: [], skill: skillPath, skillAction, mcp, global, warnings, built };
+}
+
+/**
+ * Write one of init's owned skill files, idempotently, and say what happened so
+ * `init` can print `(created|updated|unchanged)` for it like any other file.
+ * A skill rewritten byte-for-byte identically is not a write: reporting one
+ * makes an idempotent re-run look like it changed the agent's install.
+ */
+function writeSkill(path: string, content: string): InitResult['skillAction'] {
+  const existed = existsSync(path);
+  if (existed && readFileSync(path, 'utf8') === content) return 'unchanged';
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+  return existed ? 'updated' : 'created';
 }
 
 /** The warning for a settings file init left alone because it isn't plain JSON. */
@@ -181,11 +197,11 @@ function runTrailInit(
   const warnings: string[] = [];
 
   let skillPath = '';
+  let skillAction: InitResult['skillAction'] = '';
   if (global) {
     // Write the trail Claude skill.
     const skill = trailSkillPath(home);
-    mkdirSync(dirname(skill), { recursive: true });
-    writeFileSync(skill, skillTemplate('trail'));
+    skillAction = writeSkill(skill, skillTemplate('trail'));
     skillPath = skill;
     // The Hermes skill is NOT written here: it belongs to the `hermes` host
     // (hosts/init.ts), so `--agents hermes` installs it and `--agents claude`
@@ -201,7 +217,7 @@ function runTrailInit(
 
   const built = buildGraphIfMissing(dir, opts);
   // settings path: nothing written now; return empty string.
-  return { settingsPath: '', shims: [], skill: skillPath, mcp: null, global: globalWrites, warnings, built };
+  return { settingsPath: '', shims: [], skill: skillPath, skillAction, mcp: null, global: globalWrites, warnings, built };
 }
 
 /**

@@ -16,7 +16,8 @@ import { hermesSkillPath } from '../claude/init.js';
 import { hermesSkillTemplate } from '../claude/hermes-skill-template.js';
 
 export interface HostsInitResult {
-  written: { id: string; path: string; action: string }[];
+  /** `kind: 'skill'` marks the out-of-repo skill files, so init can list them apart from instruction files. */
+  written: { id: string; path: string; action: string; kind?: 'skill' }[];
   skipped: string[];
   unknown: string[];
   mcp: McpWrite[];
@@ -106,7 +107,7 @@ export function runHostsInit(
     const action = writeOwned(skillPath, hermesSkillTemplate());
     // graft's copy of the skill goes, so Hermes never loads two for one tool.
     if (name === 'trail') removeGraftCopy(hermesSkillPath(home, 'graft'));
-    written.push({ id: 'hermes', path: skillPath, action });
+    written.push({ id: 'hermes', path: skillPath, action, kind: 'skill' });
   }
   const mcp =
     opts.mcp === false

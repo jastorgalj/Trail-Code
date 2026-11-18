@@ -1448,6 +1448,7 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: { mappe
       console.error(`· workspace: wiring ${repo} and ${children.length} child repo(s): ${children.join(", ")}`);
 
     // Wire each target repo.
+    const reports: WireReport[] = [];
     for (const target of targets) {
       const targetPlan = target === repo ? plan : planInit(target, { home });
       const wr = wireTarget(target, ids, {
@@ -1459,7 +1460,24 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: { mappe
         quiet: targets.length > 1,
         laptop,
       });
+      reports.push(wr);
       for (const w of wr.warnings) console.error(w);
+    }
+
+    // One grep-able line for scripts and for whoever scans forty lines of wiring:
+    // which skills this run installed and how many of them were actually written.
+    // Printed here, not per target, so a workspace run reports once.
+    const skillById = new Map<string, string>();
+    for (const r of reports) for (const s of r.skills) if (!skillById.has(s.id)) skillById.set(s.id, s.action);
+    if (skillById.size > 0) {
+      const written = [...skillById.values()].filter((a) => a !== "unchanged").length;
+      const unchanged = skillById.size - written;
+      console.error(
+        `· skills: ${[...skillById.keys()].join(", ")} (${written} written${unchanged > 0 ? `, ${unchanged} unchanged` : ""})`,
+      );
+    } else if (opts.global === false) {
+      // Silent skips are what made `--no-global` runs look like skills were installed.
+      console.error("· skills: skipped (--no-global)");
     }
 
     // Build graph (builds all targets in workspace mode).
@@ -1499,6 +1517,8 @@ interface WireReport {
   retracted: string[];
   /** ⚠ lines, printed in full. */
   warnings: string[];
+  /** Skills written (or found already in place), collected for the run's one summary line. */
+  skills: { id: string; action: string }[];
 }
 
 /** One repo's worth of `init` writes — the parent, then each workspace child. */
@@ -1521,7 +1541,7 @@ function wireTarget(
     const { home, cliPath, plan, wantClaude } = ctx;
     const quiet = ctx.quiet === true;
     const opts = quiet ? { ...ctx.opts, build: false } : ctx.opts;
-    const report: WireReport = { retracted: [], warnings: [] };
+    const report: WireReport = { retracted: [], warnings: [], skills: [] };
     // Every per-file line goes through here; in quiet mode only ⚠ lines survive.
     const say = (line: string) => {
       if (!quiet) console.error(line);
@@ -1549,7 +1569,12 @@ function wireTarget(
       const res = runInit(repo, { build: opts.build, cliPath, statusline: wantStatusline, global: claudeGlobal, home, brand: brand() });
       if (res.settingsPath) say(`✓ wrote ${res.settingsPath}`);
       for (const s of res.shims) say(`✓ wrote ${s}`);
-      if (res.skill) say(`✓ wrote ${res.skill}`);
+      if (res.skill) {
+        // Same shape as every other written file: the bare `✓ wrote <path>` read
+        // as "it rewrote the skill" on a re-run that changed nothing.
+        say(`✓ claude: ${res.skill} (${res.skillAction})`);
+        report.skills.push({ id: "claude", action: res.skillAction });
+      }
       if (!res.mcp) {
         // trail registers no server for Claude Code: the hooks and the `trail` command cover it.
       } else if (res.mcp.action === "skipped-unparseable")
@@ -1578,6 +1603,9 @@ function wireTarget(
         brand: brand(),
       });
       for (const w of r.written) say(`✓ ${w.id}: ${w.path} (${w.action})`);
+      // The skill lives in the same list as the instruction file; the summary
+      // wants it on its own, whatever --agents selected.
+      for (const w of r.written) if (w.kind === "skill") report.skills.push({ id: w.id, action: w.action });
       for (const m of r.mcp) say(`✓ mcp ${m.id}: ${m.path} (${m.action})`);
       for (const h of r.hooks) say(`✓ hook ${h.id}: ${h.path} (${h.action})`);
 
