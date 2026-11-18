@@ -28,7 +28,7 @@ import { asksForTrail, brand, cmd, graftNotice, inBrand, PACKAGE_FOR, setBrand, 
 import { openBrowser } from "./util/browser.js";
 import { CACHE_DIR, contextDirFor } from "./context/node-file.js";
 import { loadGraphCached } from "./graph/load.js";
-import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refresh.js";
+import { ensureFreshChildren, ensureFreshGraph, ensureFreshWorktreeIn, refreshNote } from "./graph/refresh.js";
 import { isWorkspaceBuildRoot, loadWorkspaceGraphs, readWorkspace, writeWorkspace } from "./graph/workspace.js";
 import { NOT_GIT_LINE, NOT_GIT_PAIR_REFUSAL, homeFolderRefusal, isGitWorkTree } from "./init-guard.js";
 import { hasGraftIndex, nearestGraftRoot, rootProblem } from "./graph/root.js";
@@ -247,7 +247,7 @@ function requireRootDir(dir: string): string {
  * moved; a structural, $0 rebuild when it did. The note goes to stderr so `--json`
  * stdout stays machine-readable.
  */
-async function refreshBefore(dir: string, opts: { refresh?: boolean }): Promise<void> {
+async function refreshBefore(dir: string, opts: { refresh?: boolean; in?: string }): Promise<void> {
   const globalDir = program.opts<GlobalOpts>().dir;
   const root = resolve(dir);
   const disabled = opts.refresh === false;
@@ -257,6 +257,13 @@ async function refreshBefore(dir: string, opts: { refresh?: boolean }): Promise<
     : await ensureFreshGraph(root, { contextDir: globalDir, disabled });
   const note = refreshNote(r);
   if (note) console.error(note);
+  // Same reason as the MCP gate: a worktree of a child is not a child, so an
+  // `--in` naming one needs its own seed + refresh before the query reads it.
+  if (ws) {
+    const wt = await ensureFreshWorktreeIn(root, opts.in, { contextDir: globalDir, disabled });
+    const wtNote = wt ? refreshNote(wt.result) : null;
+    if (wtNote) console.error(wtNote);
+  }
 }
 
 /** Attached to every query command: `--no-refresh` answers from the graph exactly

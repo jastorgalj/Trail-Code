@@ -36,6 +36,13 @@ What this fork adds is what that seed could not know about:
 - A linked worktree is skipped by workspace child discovery (`src/graph/scopes.ts`),
   so `trail status` and federated search count each repo once while worktrees are
   alive, and repos one level deeper (`cliente/app`) are found too.
+- A worktree of a child stays **queryable from the workspace parent**:
+  `in="<repo>/.worktrees/<branch>"` (or any path inside it, relative or absolute)
+  resolves to that worktree, which is seeded from the child on the first such query
+  and answers with `repo/.worktrees/branch/…` paths (`src/graph/workspace.ts`).
+  Before this, a shared server rooted at the workspace refused the worktree and
+  answered from the child's checked-out branch instead — the exact trees where the
+  coding agents work.
 - The refresh that patches the seeded copy is bounded (50 files inline, then a
   background rebuild) and never loads the ONNX model in the answering process.
 
@@ -89,7 +96,7 @@ windows, and path handling that survives drive letters and CRLF checkouts.
 | `trail grep` | O(files × nodes) | O(nodes) |
 | `trail viz` | one repo; only port/export/title/tabs | workspace federation + `--repos`/`--skip`, tests hidden by default |
 | Notes / learnings | `trail note`, learnings look-back | removed: unvalidated free text; OpenSpec is the durable-context path |
-| Worktree seeding | seeded + patched on the first query (upstream #704) | same, plus `embeddings.db` in the seed and worktrees excluded from workspace children |
+| Worktree seeding | seeded + patched on the first query (upstream #704) | same, plus `embeddings.db` in the seed, worktrees excluded from workspace children, and `in=` able to name a worktree from the workspace parent |
 | Freshness | manual `trail build` | automatic, bounded (50 files inline, then background) |
 | Extra deps | — | `@huggingface/transformers`, `better-sqlite3`, `sqlite-vec` |
 | Git writes | hooks, branches, pushes | none: trail only reads git |
