@@ -26,7 +26,7 @@ npm install -g trail-code && trail init
 </div>
 
 > [!NOTE]
-> **This is a fork.** It keeps upstream's code map and drops everything around it that wrote to git on its own: **no learnings, no notes, no team/cloud, no hooks, no statusline, no automatic branches or pushes.** `trail` only reads git. Durable context here lives in OpenSpec (`openspec/specs/` and `openspec/changes/`), reviewed by a human — and indexed as markdown nodes, so `trail ask` still finds it.
+> **This is a fork.** It keeps upstream's code map and drops everything around it that wrote to git on its own: **no learnings, no notes, no team/cloud, no hooks, no statusline, no automatic branches or pushes.** `trail` only reads git. Durable context here lives in [OpenSpec](https://github.com/Fission-AI/OpenSpec) (`openspec/specs/` and `openspec/changes/`), reviewed by a human — and indexed as markdown nodes, so `trail ask` still finds it.
 >
 > What the fork adds on top of upstream (semantic search, the `grep` fix, workspace viz, worktree seeding) is listed with `file:line` evidence in [FORK.md](FORK.md).
 
@@ -523,6 +523,8 @@ trail build --no-include-md                  # revert
 
 OpenSpec `.md` under `openspec/specs/` and `openspec/changes/` is indexed without any
 flag (archive excluded; `--include-openspec-archive` includes it). That is where this fork keeps the context that upstream kept in learnings: reviewed, versioned, and searchable by `trail ask`.
+
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) is the workflow behind those directories: each change is proposed and reviewed as versioned markdown before it becomes code, so the *why* sits in git next to the *what* — and `trail ask` reads it in the same query as the code.
 
 ## What is on disk
 
