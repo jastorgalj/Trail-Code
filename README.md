@@ -26,7 +26,7 @@ npm install -g trail-code && trail init
 </div>
 
 > [!NOTE]
-> **This is a fork.** It keeps upstream's code map and drops everything around it that wrote to git on its own: **no learnings, no notes, no team/cloud, no hooks, no statusline, no automatic branches or pushes.** `trail` only reads git. Durable context here lives in OpenSpec (`openspec/specs/` and `openspec/changes/`), reviewed by a human — and indexed as markdown nodes, so `trail ask` still finds it.
+> **This is a fork.** It keeps upstream's code map and drops everything around it that wrote to git on its own: **no learnings, no notes, no team/cloud, no hooks, no statusline, no automatic branches or pushes.** `trail` only reads git. Durable context here lives in [OpenSpec](https://github.com/Fission-AI/OpenSpec) (`openspec/specs/` and `openspec/changes/`), reviewed by a human — and indexed as markdown nodes, so `trail ask` still finds it.
 >
 > What the fork adds on top of upstream (semantic search, the `grep` fix, workspace viz, worktree seeding) is listed with `file:line` evidence in [FORK.md](FORK.md).
 
@@ -156,7 +156,7 @@ flowchart LR
 
 Every pass is cached by content hash, the LLM ones and the tree-sitter parse alike. Re-running only touches the files that changed, so the second build is fast and cheap. `trail build --no-reuse` forces a cold re-parse.
 
-That cheapness is what lets **every query refresh the graph before it answers**. A retrieval call stats the tree against the last build's fingerprint (about 50ms on this repo), and rebuilds only if something moved, so `ask`/`grep`/`callers`/`skeleton`/`map` describe the code as it is right now, including edits that are unsaved to git: uncommitted, unstaged, or staged all look the same. Git determines the visible file set; freshness compares the working-tree bytes rather than commit or index state. The refresh is structural and `$0`; it never calls the LLM. Turn it off per-command with `--no-refresh`, or everywhere with `GRAFT_NO_REFRESH=1`.
+That cheapness is what lets **every query refresh the graph before it answers**. A retrieval call stats the tree against the last build's fingerprint (about 50ms on this repo), and rebuilds only if something moved, so `ask`/`grep`/`callers`/`skeleton`/`map` describe the code as it is right now, including edits that are unsaved to git: uncommitted, unstaged, or staged all look the same. Git determines the visible file set; freshness compares the working-tree bytes rather than commit or index state. The refresh is structural and `$0`; it never calls the LLM. When it does have work to do it says so — `refreshing 42 changed files…` on stderr before the rebuild, one line per repo in a workspace — and `--quiet` drops that line for scripts. Turn the whole check off per-command with `--no-refresh`, or everywhere with `GRAFT_NO_REFRESH=1`.
 
 Alongside the markdown graph, `trail build` writes `wiring.json` (a per-symbol code graph) plus a per-file wiring card mirroring your source tree. Tier 1 is pure tree-sitter (every function, class, and call edge; deterministic, no model, no network), which is why plain `trail build` needs no key. The `--deep` pass adds a one-line summary and a crux excerpt per symbol, cached by body hash.
 
@@ -296,6 +296,21 @@ mcp_servers:
     enabled: true
 ```
 
+#### One server per repo, or one for the team
+
+`trail init` writes no MCP entry in this fork, so the registration is yours — and it has two shapes. Both serve the same map; they differ in how many processes exist and who shares them.
+
+**Per-repo stdio, the default.** Point the host at `trail mcp <dir>` in that repo. Every session that opens the repo spawns its own process, rooted there: one index, one grammar set, a crash that costs one session, and nothing to coordinate. The price is one process per session per repo, all loading the same grammars, plus the same registration repeated in every repo on every machine.
+
+**One long-lived server, many repos or many agents.** Run a single `trail mcp <folder>` and let clients reach it through a stdio→HTTP proxy (`mcp-proxy --stateless` and friends), registering that one URL instead of a command per repo. `trail mcp` speaks stdio only — there is no HTTP transport in the binary — so a proxy is what turns one process into a URL several sessions can share.
+
+- **Root it at a multi-repo folder.** One process then serves the federated view: queries fan out to every child, hits carry `<child>/`, and `in=` narrows to one (see [Monorepos](#monorepos-submodules--multi-repo-folders)). Each child still needs its own `trail build`.
+- **No scope to go wrong.** `trail_set_scope` stores nothing: it resolves a path to the `in` value to pass on each call, so two agents can narrow to different repos without stepping on each other. `roots` from `initialize` is ignored for the same reason — behind a proxy every client's initialization reaches the same process.
+- **What it costs.** One event loop for every client, so a refresh or a rebuild triggered by one agent delays the others; and one filesystem, so the server answers about the checkout it can see, not the caller's. A team on separate clones is reading the shared checkout's code — run the server over a directory those people actually share, or let each developer run their own over their own folder, when uncommitted work matters.
+- **It is a service.** When it is down, every client loses the tools at once and keeps working with `grep`/`read` until the host reconnects. Restart it like one.
+
+**Where the registration lives.** A per-user config (`~/.claude.json` user scope, `~/.hermes/config.yaml`) suits the shared server: the URL is machine-specific, and a repo file would hand every clone the same host and port. A repo-level `.mcp.json` stays right for the per-repo stdio entry, whose command is identical everywhere.
+
 ---
 
 ## CLI
@@ -324,6 +339,7 @@ trail map --max-dirs N               # raise/lower the number of directories sho
 
 # ask / grep / skeleton / callers / map / blast all refresh the map first if the working tree moved:
 #   --no-refresh                     # answer from the map exactly as it is on disk
+#   --quiet                          # no "refreshing N changed files…" line on stderr
 #   GRAFT_NO_REFRESH=1               # same, for every command
 #   GRAFT_REFRESH=hash               # hash every file instead of trusting size+mtime
 
@@ -525,6 +541,8 @@ trail build --no-include-md                  # revert
 
 OpenSpec `.md` under `openspec/specs/` and `openspec/changes/` is indexed without any
 flag (archive excluded; `--include-openspec-archive` includes it). That is where this fork keeps the context that upstream kept in learnings: reviewed, versioned, and searchable by `trail ask`.
+
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) is the workflow behind those directories: each change is proposed and reviewed as versioned markdown before it becomes code, so the *why* sits in git next to the *what* — and `trail ask` reads it in the same query as the code.
 
 ## What is on disk
 
