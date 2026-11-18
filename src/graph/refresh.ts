@@ -101,9 +101,23 @@ export interface RefreshOptions {
   /** How long to wait for a first build of a repo on trail; 0 starts it and answers
    * at once. Default `GRAFT_FIRST_BUILD_WAIT_MS`, else FIRST_BUILD_WAIT_MS. */
   firstBuildWaitMs?: number;
+  /**
+   * Human-ready progress lines, emitted while a rebuild this call performs is in
+   * flight — "refreshing 42 changed files…", "building the graph for the first
+   * time…". Without it a query that has to repair the graph is silent for the
+   * seconds it takes, which reads as a hang to whoever is waiting (the CLI prints
+   * them on stderr unless `--quiet`; the MCP server passes none, since a tool call
+   * has nowhere to stream to).
+   */
+  onProgress?: (line: string) => void;
 }
 
 const CLEAN: RefreshResult = { refreshed: false };
+
+/** Report one line of work in progress, when the caller asked to hear about it. */
+function progress(opts: RefreshOptions, line: string): void {
+  opts.onProgress?.(line);
+}
 
 /** Env kill switch, for CI or anyone who wants queries to never write. */
 function envDisabled(): boolean {
@@ -213,6 +227,9 @@ async function buildMissingMap(dir: string, outDir: string, opts: RefreshOptions
   }
   const lockCache = join(outDir, CACHE_DIR);
   const started = Date.now();
+  // A first build is the longest silence of all (minutes on a real repo): say what
+  // the wait is for before taking it, so a frozen-looking command reads as work.
+  progress(opts, "building this repo's code map for the first time…");
   // The lock free and still no map: nobody is building it, so this query starts it.
   // Taken here, released by the child.
   if (!startFirstBuild(dir, outDir)) {
@@ -382,6 +399,15 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
       // here so an auto-rebuild keeps the same limited file set instead of silently
       // widening to the whole tree.
       const onlyDirs = readFingerprint(outDir)?.onlyDirs;
+      // The silence that made a query after `git switch` feel like a hang: say what
+      // is about to run before running it. The count is the drift re-probed above.
+      const changed = now ? driftCount(now) : 0;
+      progress(
+        opts,
+        changed > 0
+          ? `refreshing ${changed} changed file${changed === 1 ? "" : "s"}…`
+          : "refreshing the code map…",
+      );
       await buildGraph(dir, { contextDir: opts.contextDir, graphOnly: true, onlyDirs });
       invalidateGraphCaches(outDir);
       // The vector index is the one thing that stays behind: loading the ONNX model
@@ -422,7 +448,15 @@ export async function ensureFreshChildren(
     // one, each child would build into that single shared dir in turn, the last
     // clobbering the rest.) A child's graph always lives in its own `<child>/graft`,
     // which is exactly how `loadWorkspaceGraphs` reads them back.
-    const r = await ensureFreshGraph(resolve(root, child), { disabled: opts.disabled });
+    //
+    // Progress is the one thing that does pass through, prefixed with the child's
+    // name: over 29 repos the interesting question is which one is being walked
+    // right now — the last line printed answers it. A child with nothing to do
+    // prints nothing (its state is "no news").
+    const r = await ensureFreshGraph(resolve(root, child), {
+      disabled: opts.disabled,
+      onProgress: opts.onProgress ? (line) => opts.onProgress!(`${child}: ${line}`) : undefined,
+    });
     if (r.stale !== undefined) staleFiles += r.stale;
     if (!r.refreshed) continue;
     refreshedIn.push(child);

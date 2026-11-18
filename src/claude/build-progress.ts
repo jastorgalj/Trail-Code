@@ -28,10 +28,12 @@ export function parseBuildSummary(stdout: string): BuiltGraph | null {
   return { nodes: n(wiring[1]), edges: n(wiring[2]), files: n(parsed?.[1]) };
 }
 
-/** The last `parsing N/M` in a chunk of the child's stderr. */
+/** The last `parsing N/M` in a chunk of the child's stderr. The counts carry
+ * thousands separators (`parsing 1,204/1,942 files`), which is why the match is
+ * `[\d,]+` and not `\d+`. */
 export function parseProgress(chunk: string): { index: number; total: number } | null {
   let last: { index: number; total: number } | null = null;
-  for (const m of chunk.matchAll(/(?:parsing|summarizing) (\d+)\/(\d+)/g)) last = { index: n(m[1]), total: n(m[2]) };
+  for (const m of chunk.matchAll(/(?:parsing|summarizing) ([\d,]+)\/([\d,]+)/g)) last = { index: n(m[1]), total: n(m[2]) };
   return last;
 }
 
@@ -60,6 +62,9 @@ export async function buildGraphWithProgress(
       cwd: dir,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      // The child's stderr is a pipe here, where the progress line is off by
+      // default. Ask for it: `parseProgress` turns it into this spinner's count.
+      env: { ...process.env, GRAFT_PROGRESS: "1" },
     });
     const timer = setTimeout(() => child.kill(), timeoutMs);
     timer.unref?.();

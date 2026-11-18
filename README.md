@@ -156,7 +156,7 @@ flowchart LR
 
 Every pass is cached by content hash, the LLM ones and the tree-sitter parse alike. Re-running only touches the files that changed, so the second build is fast and cheap. `trail build --no-reuse` forces a cold re-parse.
 
-That cheapness is what lets **every query refresh the graph before it answers**. A retrieval call stats the tree against the last build's fingerprint (about 50ms on this repo), and rebuilds only if something moved, so `ask`/`grep`/`callers`/`skeleton`/`map` describe the code as it is right now, including edits that are unsaved to git: uncommitted, unstaged, or staged all look the same. Git determines the visible file set; freshness compares the working-tree bytes rather than commit or index state. The refresh is structural and `$0`; it never calls the LLM. Turn it off per-command with `--no-refresh`, or everywhere with `GRAFT_NO_REFRESH=1`.
+That cheapness is what lets **every query refresh the graph before it answers**. A retrieval call stats the tree against the last build's fingerprint (about 50ms on this repo), and rebuilds only if something moved, so `ask`/`grep`/`callers`/`skeleton`/`map` describe the code as it is right now, including edits that are unsaved to git: uncommitted, unstaged, or staged all look the same. Git determines the visible file set; freshness compares the working-tree bytes rather than commit or index state. The refresh is structural and `$0`; it never calls the LLM. When it does have work to do it says so — `refreshing 42 changed files…` on stderr before the rebuild, one line per repo in a workspace — and `--quiet` drops that line for scripts. Turn the whole check off per-command with `--no-refresh`, or everywhere with `GRAFT_NO_REFRESH=1`.
 
 Alongside the markdown graph, `trail build` writes `wiring.json` (a per-symbol code graph) plus a per-file wiring card mirroring your source tree. Tier 1 is pure tree-sitter (every function, class, and call edge; deterministic, no model, no network), which is why plain `trail build` needs no key. The `--deep` pass adds a one-line summary and a crux excerpt per symbol, cached by body hash.
 
@@ -324,6 +324,7 @@ trail map --max-dirs N               # raise/lower the number of directories sho
 
 # ask / grep / skeleton / callers / map / blast all refresh the map first if the working tree moved:
 #   --no-refresh                     # answer from the map exactly as it is on disk
+#   --quiet                          # no "refreshing N changed files…" line on stderr
 #   GRAFT_NO_REFRESH=1               # same, for every command
 #   GRAFT_REFRESH=hash               # hash every file instead of trusting size+mtime
 

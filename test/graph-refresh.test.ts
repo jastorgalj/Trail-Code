@@ -769,3 +769,38 @@ test("outside a repo on trail, under --dir, or in the home folder, no map is bui
   }
   assert.deepEqual(await runsIn(log), []);
 });
+
+// --- progress while the refresh runs: the difference between "working" and "hung" ---
+
+test("a pre-query refresh reports the repair before doing it", async () => {
+  const d = repo();
+  await buildGraph(d);
+  writeFileSync(join(d, "src", "math.ts"), `${MATH}export function mul(a: number, b: number): number {\n  return a * b;\n}\n`);
+
+  const lines: string[] = [];
+  const r = await ensureFreshGraph(d, { onProgress: (l) => lines.push(l) });
+  assert.equal(r.refreshed, true);
+  assert.deepEqual(lines, ["refreshing 1 changed file…"]);
+});
+
+test("a clean tree prints no progress at all", async () => {
+  const d = repo();
+  await buildGraph(d);
+  const lines: string[] = [];
+  await ensureFreshGraph(d, { onProgress: (l) => lines.push(l) });
+  assert.deepEqual(lines, [], "nothing to repair, nothing to report");
+});
+
+test("a workspace prefixes each child's line with the repo it is walking", async () => {
+  const d = mkdtempSync(join(tmpdir(), "graft-refresh-ws-progress-"));
+  const child = join(d, "api");
+  mkdirSync(join(child, "src"), { recursive: true });
+  writeFileSync(join(child, "src", "math.ts"), MATH);
+  await buildGraph(child);
+  writeFileSync(join(child, "src", "math.ts"), `${MATH}export function mul(a: number, b: number): number {\n  return a * b;\n}\n`);
+
+  const lines: string[] = [];
+  const r = await ensureFreshChildren(d, ["api"], { onProgress: (l) => lines.push(l) });
+  assert.equal(r.refreshed, true);
+  assert.deepEqual(lines, ["api: refreshing 1 changed file…"], "which repo is being walked, not just that something is");
+});
