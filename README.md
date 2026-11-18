@@ -296,6 +296,21 @@ mcp_servers:
     enabled: true
 ```
 
+#### One server per repo, or one for the team
+
+`trail init` writes no MCP entry in this fork, so the registration is yours — and it has two shapes. Both serve the same map; they differ in how many processes exist and who shares them.
+
+**Per-repo stdio, the default.** Point the host at `trail mcp <dir>` in that repo. Every session that opens the repo spawns its own process, rooted there: one index, one grammar set, a crash that costs one session, and nothing to coordinate. The price is one process per session per repo, all loading the same grammars, plus the same registration repeated in every repo on every machine.
+
+**One long-lived server, many repos or many agents.** Run a single `trail mcp <folder>` and let clients reach it through a stdio→HTTP proxy (`mcp-proxy --stateless` and friends), registering that one URL instead of a command per repo. `trail mcp` speaks stdio only — there is no HTTP transport in the binary — so a proxy is what turns one process into a URL several sessions can share.
+
+- **Root it at a multi-repo folder.** One process then serves the federated view: queries fan out to every child, hits carry `<child>/`, and `in=` narrows to one (see [Monorepos](#monorepos-submodules--multi-repo-folders)). Each child still needs its own `trail build`.
+- **No scope to go wrong.** `trail_set_scope` stores nothing: it resolves a path to the `in` value to pass on each call, so two agents can narrow to different repos without stepping on each other. `roots` from `initialize` is ignored for the same reason — behind a proxy every client's initialization reaches the same process.
+- **What it costs.** One event loop for every client, so a refresh or a rebuild triggered by one agent delays the others; and one filesystem, so the server answers about the checkout it can see, not the caller's. A team on separate clones is reading the shared checkout's code — run the server over a directory those people actually share, or let each developer run their own over their own folder, when uncommitted work matters.
+- **It is a service.** When it is down, every client loses the tools at once and keeps working with `grep`/`read` until the host reconnects. Restart it like one.
+
+**Where the registration lives.** A per-user config (`~/.claude.json` user scope, `~/.hermes/config.yaml`) suits the shared server: the URL is machine-specific, and a repo file would hand every clone the same host and port. A repo-level `.mcp.json` stays right for the per-repo stdio entry, whose command is identical everywhere.
+
 ---
 
 ## CLI
