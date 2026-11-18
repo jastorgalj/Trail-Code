@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { TOOLS, callTool, canonicalToolName } from '../src/mcp/tools.js';
+import { TOOLS, callTool, canonicalToolName, capToolOutput, MAX_TOOL_OUTPUT_CHARS } from '../src/mcp/tools.js';
 
 function builtRepo(): string {
   const d = mkdtempSync(join(tmpdir(), 'graft-mcptools-'));
@@ -72,6 +72,23 @@ function multiDirRepo(): string {
   return d;
 }
 
+/** 300 functions each containing 'capTestMarker' on 2 lines (comment + name).
+ * Raw find_all output on this repo exceeds 20 KB, exercising capToolOutput inside callTool. */
+function bigRepo(): string {
+  const d = mkdtempSync(join(tmpdir(), 'graft-mcptools-big-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  let src = '';
+  for (let i = 0; i < 100; i++) {
+    const idx = String(i).padStart(3, '0');
+    src +=
+      `// capTestMarker-comment-${idx}: filler line long enough to push find_all output past 20 KB so callTool must apply capToolOutput\n` +
+      `export function capTestMarkerFn${idx}(x: number): number { return x + ${i}; }\n`;
+  }
+  writeFileSync(join(d, 'src', 'big.ts'), src);
+  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  return d;
+}
+
 test('TOOLS lists the six tools with schemas', async () => {
   assert.deepEqual(TOOLS.map((t) => t.name), [
     'graft_find_code',
@@ -91,6 +108,9 @@ test('TOOLS lists the six tools with schemas', async () => {
   const props = (callers.inputSchema as { properties: Record<string, unknown> }).properties;
   assert.ok('direction' in props, 'graft_trace_calls schema should document `direction`');
   assert.ok('depth' in props, 'graft_trace_calls schema should document `depth`');
+  const findAll = TOOLS.find((t) => t.name === 'graft_find_all')!;
+  const findAllProps = (findAll.inputSchema as { properties: Record<string, unknown> }).properties;
+  assert.ok('limit' in findAllProps, 'graft_find_all schema should document `limit` (issue #18)');
 });
 
 test('graft_find_code returns ranked hits for a built repo', async () => {
@@ -221,6 +241,40 @@ test('graft_find_all round-trips a hit on the built fixture, grouped by enclosin
   assert.equal(r.isError, false);
   assert.match(r.text, /"add" — \d+ hits? in \d+ symbols? across \d+ files? \(searched \d+ indexed files\)/);
   assert.match(r.text, /src\/math\.ts/);
+});
+
+test('graft_find_all: `limit` caps the hits and the truncation note names the rest (issue #18)', async () => {
+  const d = builtRepo();
+  const capped = await callTool(d, 'graft_find_all', { pattern: 'add', limit: 1 });
+  assert.equal(capped.isError, false);
+  assert.match(capped.text, /"add" — 1 hit/);
+  assert.match(capped.text, /\(truncated: \d+ more hits? beyond the cap — narrow with in=, a lower --limit, or a more specific pattern\)/);
+
+  const all = await callTool(d, 'graft_find_all', { pattern: 'add' });
+  assert.ok(all.text.includes('"add" — 2 hits'), `limit: 1 must not leak the other hit:\n${all.text}`);
+  assert.ok(!/truncated: \d+ more hit/.test(all.text), 'nothing is truncated when the hits fit under the limit');
+});
+
+test('capToolOutput: bounds any tool response and says what was cut', () => {
+  assert.equal(capToolOutput('ok'), 'ok');
+  const big = 'x'.repeat(MAX_TOOL_OUTPUT_CHARS + 5_000);
+  const capped = capToolOutput(big);
+  assert.ok(capped.length < big.length);
+  assert.match(capped, /\(truncated: response capped at 20 KB — 4\.9 KB omitted; narrow with in=, a lower limit, or a more specific query\)/);
+});
+
+test('callTool: capToolOutput is wired — find_all on a large repo stays within 20 KB', async () => {
+  // 100 functions × 2 lines containing 'capTestMarker' each = ~200 hits;
+  // the raw find_all output is ~48 KB before the cap.
+  const d = bigRepo();
+  const r = await callTool(d, 'graft_find_all', { pattern: 'capTestMarker', limit: 1000 });
+  assert.equal(r.isError, false);
+  // The raw output exceeds 20 KB; callTool must cap it via capToolOutput (tools.ts:354).
+  assert.ok(
+    r.text.length <= MAX_TOOL_OUTPUT_CHARS + 300,
+    `expected text to be capped at ~${MAX_TOOL_OUTPUT_CHARS} chars, got ${r.text.length}`,
+  );
+  assert.match(r.text, /\(truncated: response capped at 20 KB/);
 });
 
 test('graft_find_all: no hits is a soft (non-error) result with the loud fallback note', async () => {

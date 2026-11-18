@@ -82,7 +82,7 @@ test('Scenario: find_all con un parámetro desconocido no hace búsqueda', async
   const r = await callTool(d, 'trail_find_all', { pattern: 'add', paths: 'a' });
   assert.equal(r.isError, true);
   assert.match(r.text, /unknown argument "paths" \(did you mean "in"\?\) for trail_find_all/);
-  assert.match(r.text, /expected one of: pattern, in, ignore_case, fixed/);
+  assert.match(r.text, /expected one of: pattern, in, limit, ignore_case, fixed/);
   // No search results
   assert.doesNotMatch(r.text, /hits in/);
 });
@@ -180,7 +180,7 @@ test('Scenario: find_all con query en vez de pattern', async () => {
   assert.equal(r.isError, true);
   assert.equal(
     r.text,
-    'unknown argument "query" (did you mean "pattern"?) for trail_find_all; missing required argument "pattern"; expected one of: pattern, in, ignore_case, fixed',
+    'unknown argument "query" (did you mean "pattern"?) for trail_find_all; missing required argument "pattern"; expected one of: pattern, in, limit, ignore_case, fixed',
   );
 });
 

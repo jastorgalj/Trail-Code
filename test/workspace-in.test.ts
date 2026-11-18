@@ -261,6 +261,19 @@ test('find_all: in a → searched 3 indexed files', async () => {
   assert.doesNotMatch(r.text, /^b\//m);
 });
 
+test('find_all: in a + limit:2 → solo hits bajo a/, ≤2 y truncado con el total correcto', async () => {
+  // Fixture: a/x has 2 hits (src/x.ts + lib/l.ts), a/y has 1 hit (src/y.ts) = 3 total in group a.
+  // limit:2 caps the global answer to 2; the remaining 1 must land in truncated.hits.
+  const r = await callTool(ROOT, 'trail_find_all', { pattern: 'sharedFn', in: 'a', limit: 2 });
+  assert.strictEqual(r.isError, false, `expected isError:false, got: ${r.text}`);
+  // Only paths under a/ — b/ must be absent even without limit
+  assert.doesNotMatch(r.text, /^b\//m, 'in=a must exclude b/ regardless of limit');
+  // The global cap kept 2 hits, truncation note must name the 1 beyond the cap
+  assert.match(r.text, /1 more hit beyond the cap/, 'truncation note must report exactly 1 omitted hit');
+  // Header reflects the capped count (2), not the total before the cap
+  assert.match(r.text, /"sharedFn" — 2 hits/, 'header hit count must be the kept count after cap');
+});
+
 test('find_all: sub-prefijo existente sin resultados → isError:false', async () => {
   const r = await callTool(ROOT, 'trail_find_all', { pattern: 'zzzNoExiste', in: 'a/x/src' });
   assert.strictEqual(r.isError, false, `expected isError:false, got: ${r.text}`);
