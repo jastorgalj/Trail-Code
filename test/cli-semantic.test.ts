@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeWorkspace } from "../src/graph/workspace.js";
+import { buildGraph } from "../src/graph/build.js";
 import { contextDirFor, CACHE_DIR } from "../src/context/node-file.js";
 import { tmpRepo, runCli } from "./helpers.js";
 
@@ -59,7 +60,7 @@ test("--in naming nothing is reported, not searched across every repo", () => {
   const r = runCli(["ask", "anything", root, "--semantic", "--in", "nope", "--no-refresh"]);
 
   assert.equal(r.status, 1, r.describe());
-  assert.match(r.stderr, /no workspace repos match "in=nope"/, r.describe());
+  assert.match(r.stderr, /no workspace repo matching "nope"/, r.describe());
   // repoA's index is broken too, but it was never in scope: no search happened.
   assert.doesNotMatch(r.stderr, /semantic search failed in repoA/, r.describe());
 });
@@ -99,4 +100,20 @@ test("single repo with an unreadable index reports the failure", () => {
   assert.equal(r.status, 1, r.describe());
   assert.match(r.stderr, /semantic search failed: .*file is not a database/, r.describe());
   assert.doesNotMatch(r.stderr, /no semantic matches found/, r.describe());
+});
+
+test("--in pointing to a sub-prefix with nothing indexed → P3 error, exit 1", async () => {
+  // Create workspace: repoA has a built graph (src/foo.ts), no nada/ subdir.
+  const root = tmpRepo("cli-sem-p3");
+  const repoADir = join(root, "repoA");
+  mkdirSync(join(repoADir, "src"), { recursive: true });
+  mkdirSync(join(repoADir, ".git"), { recursive: true });
+  writeFileSync(join(repoADir, "src", "foo.ts"), "export function foo() { return 1; }\n");
+  writeWorkspace(root, { version: 1, children: ["repoA"] });
+  await buildGraph(repoADir);
+
+  const r = runCli(["ask", "anything", root, "--semantic", "--in", "repoA/nada", "--no-refresh"]);
+
+  assert.equal(r.status, 1, r.describe());
+  assert.match(r.stderr, /nothing indexed under "repoA\/nada\/"/, r.describe());
 });

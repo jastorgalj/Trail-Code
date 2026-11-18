@@ -120,25 +120,11 @@ THEN la primera contiene `lexical` y `no embeddings`, y la segunda contiene `emb
 
 `trail ask --semantic` en un workspace SHALL producir los mismos hits, el mismo filtro por `--in` y los mismos diagnósticos de cobertura que la tool `trail_search_semantic`, porque ambos consumen una sola implementación federada. Los hits SHALL ir a stdout; la cobertura y los fallos por hijo, a stderr.
 
-#### Scenario: --in acota la búsqueda en la CLI
+#### Scenario: Hits a stdout, cobertura y fallos a stderr
 
-GIVEN un workspace con índice semántico en `repoA` y `repoB`
-WHEN se ejecuta `trail ask "<query>" --semantic --in repoB`
-THEN el resultado contiene sólo hits de `repoB`
-
-#### Scenario: --in con subpath filtra por segmento
-
-GIVEN un workspace con índice en `repoA`
-WHEN se ejecuta `trail ask "<query>" --semantic --in repoA/src`
-THEN sólo se devuelven hits cuyo `file_path` cae bajo `src/` del hijo
-
-#### Scenario: Un --in que no nombra ningún hijo es un error
-
-GIVEN un workspace con hijos `repoA` y `repoB`
-WHEN se ejecuta `trail ask "<query>" --semantic --in nope`
-THEN stderr dice que ningún repo del workspace coincide con `nope` y lista los disponibles
-AND el proceso termina con código distinto de cero
-AND no se busca en ningún hijo
+GIVEN un workspace con `repoA` indexado y `repoB` sin índice semántico
+WHEN se ejecuta `trail ask "<query>" --semantic` y hay hits en `repoA`
+THEN los hits de `repoA` van a stdout y la línea de cobertura (`1 of 2 workspace repos have a semantic index`) va a stderr
 
 ### Requirement: La CLI distingue «sin índice» de «sin coincidencias»
 
