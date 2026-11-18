@@ -593,7 +593,7 @@ export function federateAsk(
     } else {
       result.note = `no matching nodes across ${wg.loaded.length} workspace repo(s) — try different words, or \`${cmd("graft build")}\` at a child`;
     }
-    if (note) result.note = result.note ? `${result.note}\n${note}` : note;
+    if (hits.length === 0 && note) result.note = result.note ? `${result.note}\n${note}` : note;
     return result;
   }
 
@@ -640,7 +640,7 @@ export function federateAsk(
   } else {
     result.note = `no matching nodes across ${wg.loaded.length} workspace repo(s) — try different words, or \`${cmd("graft build")}\` at a child`;
   }
-  if (note) result.note = result.note ? `${result.note}\n${note}` : note;
+  if (hits.length === 0 && note) result.note = result.note ? `${result.note}\n${note}` : note;
   return result;
 }
 
@@ -777,7 +777,6 @@ export function federateCallers(
     return { text: cov ? `${base}\n${cov}` : base, found: false };
   }
   let text = blocks.join("\n\n");
-  if (cov) text += `\n\n${cov}`;
   return { text, found: true };
 }
 

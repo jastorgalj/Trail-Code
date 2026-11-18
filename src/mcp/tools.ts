@@ -223,7 +223,7 @@ async function callWorkspaceTool(
         fixed: typeof args.fixed === 'boolean' ? args.fixed : undefined,
       });
       const text = result.totalHits === 0 ? zeroHitNote(result) : formatGrepResult(result);
-      return { text: coverage ? `${text}\n${coverage}` : text, isError: false };
+      return { text: result.totalHits === 0 && coverage ? `${text}\n${coverage}` : text, isError: false };
     }
     case 'graft_repo_map': {
       const maxDirs = typeof args.max_dirs === 'number' && Number.isFinite(args.max_dirs) && args.max_dirs > 0 ? args.max_dirs : undefined;
@@ -274,7 +274,8 @@ export async function callTool(
     // it is right now, including edits nobody has committed (or even saved through
     // this agent). ~3ms when nothing moved; a structural, $0 rebuild when it did.
     // Same reason as the CLI's `noteQuery`: price this session's tokens once,
-    // here, so the formatters downstream can put a dollar figure in the nudge.
+    // here, so the formatters downstream can include a dollar figure in the
+    // savings line when a rate is known.
     setInputRate(sessionInputRate(root));
     let note: string | null = null;
     if (!NO_REFRESH_TOOLS.has(name)) {
