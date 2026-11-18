@@ -19,6 +19,7 @@ import {
   federateCheck,
   federateGrep,
   federateMap,
+  federateSemantic,
   formatGrepResult,
   migrationNote,
   splitWorkspace,
@@ -155,6 +156,33 @@ export function runWorkspaceMap(
   opts: { maxDirs?: number },
 ): void {
   process.stdout.write(federateMap(root, override, { maxDirs: opts.maxDirs }));
+}
+
+export async function runWorkspaceSemantic(
+  root: string,
+  override: string | undefined,
+  query: string,
+  opts: { limit?: number; in?: string },
+): Promise<void> {
+  const r = await federateSemantic(root, override, query, opts.limit ?? 8, opts.in);
+  // Two channels: the hits are the answer (stdout), coverage and failures are
+  // diagnostics (stderr). The MCP tool gets them merged in `text` instead,
+  // because a tool result has only one channel.
+  for (const line of r.errors) console.error(line);
+  for (const line of r.notes) console.error(line);
+  if (r.isError) {
+    // A diagnosis — bad `in`, no index anywhere, every child failing — is not
+    // an empty result set, so it never reaches stdout as one.
+    if (r.errors.length === 0) console.error(r.answer);
+    process.exitCode = 1;
+    return;
+  }
+  if (r.found === 0) {
+    console.error(r.answer);
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(r.answer + '\n');
 }
 
 export async function runWorkspaceCheck(root: string, override?: string): Promise<void> {
