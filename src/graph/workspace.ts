@@ -36,7 +36,8 @@ import {
 } from "./traverse-cli.js";
 import { edgeWalk, resolveSymbol, type Direction } from "./traverse.js";
 import { wiringPath } from "./write.js";
-import type { GraphV1 } from "./types.js";
+import type { GraphV1, NodeV1 } from "./types.js";
+import { normalizePathPrefix } from "../util/paths.js";
 import {
   ask,
   type AskHit,
@@ -244,6 +245,66 @@ export function coverageNote(g: WorkspaceGraphs): string {
   return `${g.loaded.length} of ${total} workspace repos have graphs; run ${cmd("graft build")} to cover ${g.missing.join(", ")}`;
 }
 
+/** What an `in` names, resolved ONCE for every federated command: `children`
+ * are parent-relative child paths (as `workspace.json` lists them) and
+ * `subpath` is the remainder to apply INSIDE each selected child — each
+ * child's graph is rooted at the child, never at the parent. */
+export interface WorkspaceInScope {
+  children: string[];
+  subpath?: string;
+}
+
+export type WorkspaceInResolution =
+  | ({ ok: true } & WorkspaceInScope)
+  | { ok: false; available: string[]; prefix: string };
+
+/**
+ * The single interpretation of `in` for workspace federation. `ask`,
+ * `callers`, `grep` and `semantic` all resolve through here, so the same `in`
+ * cannot mean different things depending on the tool:
+ *
+ *  - equal to a child, or under one → that child, plus the remainder as
+ *    `subpath` (the longest compound child wins: `a/b` beats `a`);
+ *  - a folder that CONTAINS children → those children, no `subpath`;
+ *  - naming nothing → `ok: false`, so the caller reports the typo loudly
+ *    instead of quietly searching all ~29 repos.
+ */
+export function resolveWorkspaceIn(wg: WorkspaceGraphs, inScope: string): WorkspaceInResolution {
+  const all = [...wg.loaded.map((l) => l.child), ...wg.missing].sort();
+  const prefix = normalizePathPrefix(inScope);
+  if (!prefix) return { ok: true, children: all };
+
+  const descendant = all
+    .filter((c) => prefix === c || prefix.startsWith(`${c}/`))
+    .sort((a, b) => b.length - a.length)[0];
+  if (descendant) {
+    const rest = prefix.slice(descendant.length).replace(/^\//, "");
+    return { ok: true, children: [descendant], subpath: rest || undefined };
+  }
+
+  const contained = all.filter((c) => c.startsWith(`${prefix}/`));
+  if (contained.length > 0) return { ok: true, children: contained };
+
+  return { ok: false, available: all, prefix };
+}
+
+/** `no workspace repo "nope" — repos: repoA, repoB` — the shared wording when
+ * an `in` names nothing in this workspace. */
+export function noWorkspaceRepoMessage(r: { available: string[]; prefix: string }): string {
+  return `no workspace repo "${r.prefix}" — repos: ${r.available.join(", ")}`;
+}
+
+/** `resolveSymbol` scoped to ONE child with the child-relative `subpath`. A
+ * sub-path that exists in some children but not others must not abort the
+ * whole federation, so an unindexed prefix yields no matches for this child. */
+function resolveInChild(graph: GraphV1, symbol: string, subpath?: string): NodeV1[] {
+  try {
+    return resolveSymbol(graph, symbol, subpath ? { in: subpath } : {});
+  } catch {
+    return []; // nothing indexed under `subpath` in THIS child; the others still answer
+  }
+}
+
 /** Prefix a hit pointer with its child dir so a `path:span` (or concept path
  * list) opens correctly from the parent. Leaves free-text fragments alone. */
 function prefixPointer(child: string, pointer: string): string {
@@ -327,32 +388,22 @@ export function federateAsk(
   const limit = opts.limit ?? 8;
   const fileTopLock = opts.fileTopLock ?? true;
 
-  // `--in` scopes to a single child (and, past the child path, a sub-scope
-  // within it). A prefix naming no known child at all is a caller mistake.
-  // Children may be compound paths (e.g. "default-core/frontend"), so we
-  // find the longest child path that is a prefix of (or equal to) the --in
-  // value, rather than splitting on the first "/" only.
-  let onlyChild: string | undefined;
+  // `--in` scopes to one child (and, past the child path, a sub-scope within
+  // it), or to a folder that holds several children. Resolved by the SHARED
+  // resolver so grep/callers/semantic read the same `in` identically.
+  let onlyChildren: Set<string> | undefined;
   let childIn: string | undefined;
   if (opts.in) {
-    const prefix = opts.in.replace(/\/+$/, "");
-    const allChildren = [...wg.loaded.map((l) => l.child), ...wg.missing].sort();
-    // Longest matching child path wins (e.g. "default-core/frontend" over "default-core").
-    const match = allChildren
-      .filter((c) => prefix === c || prefix.startsWith(c + "/"))
-      .sort((a, b) => b.length - a.length)[0];
-    if (!match) {
-      throw new Error(`no workspace repo matching "${prefix}" — repos: ${allChildren.join(", ")}`);
-    }
-    onlyChild = match;
-    const remaining = prefix.slice(match.length).replace(/^\//, "");
-    childIn = remaining || undefined;
+    const r = resolveWorkspaceIn(wg, opts.in);
+    if (!r.ok) throw new Error(noWorkspaceRepoMessage(r));
+    onlyChildren = new Set(r.children);
+    childIn = r.subpath;
   }
 
   // Pass 1: run each child's ask; keep its hits + RAW top-hit coverage.
   const runs: ChildRun[] = [];
   for (const { child } of wg.loaded) {
-    if (onlyChild && child !== onlyChild) continue;
+    if (onlyChildren && !onlyChildren.has(child)) continue;
     let r: AskResult;
     try {
       // Over-fetch per child so cross-child fusion has enough candidates to
@@ -397,21 +448,23 @@ export function federateAsk(
   // alsoMatched. Both floors are absolute + scale-invariant (see their docs).
   // The gate is a cross-child FAIRNESS mechanism: it stops a weak body-token
   // collision in one repo from federating beside another repo's genuine hits.
-  // An explicit `--in <child>` removes all cross-child competition — the caller
-  // has already chosen the scope — so the gate must NOT apply there, or the
-  // `also matched: <child> — narrow with --in <child>` hint would lead to an
-  // empty result for exactly the weak child it points at. With `onlyChild` set,
-  // every run (there is at most one) survives, matching a standalone child ask.
+  // An explicit single-child `--in` removes all cross-child competition — the
+  // caller has already chosen the scope — so the gate must NOT apply there, or
+  // the `also matched: <child> — narrow with --in <child>` hint would lead to an
+  // empty result for exactly the weak child it points at. With one child
+  // selected, its run survives, matching a standalone child ask. A folder-wide
+  // `--in` (several children) still competes, so the gate stays on.
+  const explicitSingleChild = onlyChildren !== undefined && onlyChildren.size === 1;
   const gatedOut: { scope: string; bestId: string }[] = [];
   const survivors: ChildRun[] = [];
   const baselineSurvivors: ChildRun[] = [];
   for (const run of runs) {
     const baselineEligible =
-      onlyChild ||
+      explicitSingleChild ||
       run.baselineCoverageStrong >= STRONG_FLOOR ||
       run.baselineCoverage >= HIGH_FLOOR;
     const fileEligible =
-      onlyChild ||
+      explicitSingleChild ||
       run.coverageStrong >= STRONG_FLOOR ||
       run.coverage >= HIGH_FLOOR;
     if (baselineEligible) baselineSurvivors.push(run);
@@ -646,14 +699,27 @@ export function federateAsk(
 
 /** Merge every child's `GrepResult` into one, prefixing group paths with the
  * child dir and re-sorting by coupling (inDegree desc, path asc) across repos.
- * In-degree stays each child's own — it comes from that child's graph. */
+ * In-degree stays each child's own — it comes from that child's graph.
+ *
+ * `in` narrows exactly like the other federated commands (`resolveWorkspaceIn`
+ * — one child plus a child-relative subpath, or a folder of children), so
+ * `find_all` no longer reads every repo while ignoring the scope it was given.
+ * A child with nothing indexed under the subpath is skipped, never fatal. */
 export function federateGrep(
   root: string,
   override: string | undefined,
   pattern: string,
-  opts: { ignoreCase?: boolean; fixed?: boolean } = {},
+  opts: { ignoreCase?: boolean; fixed?: boolean; in?: string } = {},
 ): { result: GrepResult; coverage: string } {
   const wg = loadWorkspaceGraphs(root, override);
+  let onlyChildren: Set<string> | undefined;
+  let subpath: string | undefined;
+  if (opts.in) {
+    const r = resolveWorkspaceIn(wg, opts.in);
+    if (!r.ok) throw new Error(noWorkspaceRepoMessage(r));
+    onlyChildren = new Set(r.children);
+    subpath = r.subpath;
+  }
   const groups: GrepGroup[] = [];
   let filesSearched = 0;
   let totalHits = 0;
@@ -662,10 +728,17 @@ export function federateGrep(
   let savedChars = 0;
 
   for (const { child, graph } of wg.loaded) {
-    const r = grepGraph(graph, join(root, child), pattern, {
-      ignoreCase: opts.ignoreCase,
-      fixed: opts.fixed,
-    });
+    if (onlyChildren && !onlyChildren.has(child)) continue;
+    let r: GrepResult;
+    try {
+      r = grepGraph(graph, join(root, child), pattern, {
+        ignoreCase: opts.ignoreCase,
+        fixed: opts.fixed,
+        in: subpath,
+      });
+    } catch {
+      continue; // nothing indexed under `subpath` in THIS child
+    }
     filesSearched += r.filesSearched;
     totalHits += r.totalHits;
     truncated.files += r.truncated.files;
@@ -742,7 +815,11 @@ export async function federateCheck(
 }
 
 /** Resolve a symbol across every child, grouped per child. Reuses the shared
- * traverse-cli formatters so each block reads exactly like `graft callers`. */
+ * traverse-cli formatters so each block reads exactly like `graft callers`.
+ *
+ * `in` goes through `resolveWorkspaceIn`: the child-relative remainder is what
+ * each child's `resolveSymbol` sees, and a child missing that sub-path is
+ * skipped rather than throwing `nothing indexed` and aborting the call. */
 export function federateCallers(
   root: string,
   override: string | undefined,
@@ -754,10 +831,20 @@ export function federateCallers(
   const depth = opts.depth && opts.depth >= 1 ? Math.floor(opts.depth) : 1;
   const showDepth = depth > 1;
 
+  let onlyChildren: Set<string> | undefined;
+  let subpath: string | undefined;
+  if (opts.in) {
+    const r = resolveWorkspaceIn(wg, opts.in);
+    if (!r.ok) return { text: noWorkspaceRepoMessage(r), found: false };
+    onlyChildren = new Set(r.children);
+    subpath = r.subpath;
+  }
+
   const blocks: string[] = [];
   let found = false;
   for (const { child, graph } of wg.loaded) {
-    const matches = resolveSymbol(graph, symbol, opts.in ? { in: opts.in } : {});
+    if (onlyChildren && !onlyChildren.has(child)) continue;
+    const matches = resolveInChild(graph, symbol, subpath);
     if (matches.length === 0) continue;
     found = true;
     const results = matches.map((m) => ({ symbol: m, hits: edgeWalk(graph, m, direction, depth) }));
@@ -825,10 +912,10 @@ export { formatGrepResult, zeroHitNote };
  * repos (`.trail/cache/.cache/embeddings.db`) and legacy graft-layout repos
  * (`graft/.cache/embeddings.db`).
  *
- * `inScope` selects children by segment-aware prefix:
- *   - equal to a child path, or starts with `<child>/`  → that child / group
- *   - starts with `<child>/` where child is an ancestor → subpath filter within child
- *   - no match → `isError: true`
+ * `inScope` narrows exactly like every other federated tool — it goes through
+ * `resolveWorkspaceIn`: a child path plus an optional child-relative subpath,
+ * or a folder that holds children. The subpath filters hits by segment-aware
+ * prefix; an `in` naming nothing is `isError: true`.
  *
  * Errors (missing index, failed search) are reported, not swallowed.
  */
@@ -842,35 +929,22 @@ export async function federateSemantic(
   const wg = loadWorkspaceGraphs(root, override);
   const allChildren = [...wg.loaded.map(l => l.child), ...wg.missing].sort();
 
-  // ── Resolve scope from `in` ────────────────────────────────────────────────
+  // ── Resolve scope from `in` — the same resolver every federated tool uses ──
   let selectedChildren: string[];
   let subpath: string | undefined;
 
   if (inScope) {
-    const inTrimmed = inScope.replace(/\/$/, '');
-    // Rule 1: hijos cuyo path es igual o empieza con `in/`
-    const prefixMatches = allChildren.filter(
-      c => c === inTrimmed || c.startsWith(inTrimmed + '/'),
-    );
-    if (prefixMatches.length > 0) {
-      selectedChildren = prefixMatches;
-    } else {
-      // Rule 2: `in` apunta dentro de un hijo (subpath)
-      const ancestor = allChildren
-        .filter(c => inTrimmed.startsWith(c + '/'))
-        .sort((a, b) => b.length - a.length)[0];
-      if (ancestor) {
-        selectedChildren = [ancestor];
-        subpath = inTrimmed.slice(ancestor.length + 1);
-      } else {
-        return {
-          text: `no workspace repos match "in=${inTrimmed}" — available: ${allChildren.slice(0, 5).join(', ')}`,
-          isError: true,
-        };
-      }
+    const r = resolveWorkspaceIn(wg, inScope);
+    if (!r.ok) {
+      return {
+        text: `no workspace repos match "in=${r.prefix}" — available: ${r.available.slice(0, 5).join(', ')}`,
+        isError: true,
+      };
     }
+    selectedChildren = r.children;
+    subpath = r.subpath;
   } else {
-    selectedChildren = allChildren;
+    selectedChildren = [...allChildren];
   }
 
   // ── Classify children by index presence ───────────────────────────────────

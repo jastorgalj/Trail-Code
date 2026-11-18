@@ -524,6 +524,89 @@ for (const [kind, junkFiles] of [
   });
 }
 
+/** Two children under a shared folder (`a/x`, `a/y`) plus one with no `src/`,
+ * so `in=a/x/src` exercises both the child-relative subpath and the skip-a-
+ * child-that-lacks-it path. Each child defines the same symbol names in a
+ * different subtree, so any leak is visible in the results. */
+const NESTED = {
+  "a/x": {
+    "src/one.ts": "function targetOne() { return 1; }\nexport function callerOne() { return targetOne(); }\n",
+    "other/two.ts": "export function otherOnly() { return 2; }\n",
+  },
+  "a/y": {
+    "src/three.ts": "function targetOne() { return 3; }\nexport function callerOne() { return targetOne(); }\n",
+    "other/four.ts": "export function otherOnly() { return 4; }\n",
+  },
+  "a/z": {
+    "lib/five.ts": "export function callerOne() { return 5; }\n",
+  },
+};
+
+test("workspace in=a/x/src: ask, trace_calls and find_all agree on the same scope", async () => {
+  const p = workspaceFx(NESTED);
+  await buildWorkspace(p);
+  const IN = "a/x/src";
+
+  // ask — already worked; the baseline the others must match.
+  const ask = federateAsk(p, undefined, "targetOne callerOne", { limit: 8, in: IN });
+  assert.ok(ask.hits.length > 0, "ask finds the scoped hits");
+  assert.ok(
+    ask.hits.every((h) => h.pointer.startsWith("a/x/src/")),
+    `ask leaked outside a/x/src: ${ask.hits.map((h) => h.pointer).join(", ")}`,
+  );
+
+  // trace_calls — used to pass the FULL `in` to every child, so assertPrefixIndexed
+  // threw "nothing indexed under a/x/src/" and the whole call aborted.
+  const callers = federateCallers(p, undefined, "targetOne", { direction: "in", in: IN });
+  assert.equal(callers.found, true, `trace_calls must resolve inside the child: ${callers.text}`);
+  assert.ok(callers.text.includes("## a/x/"), `expected the a/x block:\n${callers.text}`);
+  assert.ok(!callers.text.includes("## a/y/"), `a/y must not appear for in=${IN}:\n${callers.text}`);
+
+  // find_all — `in` used to be dropped entirely, sweeping every child.
+  const scoped = federateGrep(p, undefined, "callerOne", { in: IN });
+  assert.equal(scoped.result.totalHits, 1, "only a/x/src/one.ts defines callerOne under the scope");
+  assert.deepEqual(scoped.result.groups.map((g) => g.path), ["a/x/src/one.ts"]);
+  assert.equal(scoped.result.filesSearched, 1, "find_all must not read other children's files");
+
+  const unscoped = federateGrep(p, undefined, "callerOne", {});
+  assert.equal(unscoped.result.filesSearched, 5, "without `in` every child file is searched");
+  assert.equal(unscoped.result.totalHits, 3);
+
+  rmSync(p, { recursive: true, force: true });
+});
+
+test("workspace in=<folder holding children>: every federated tool narrows to those children", async () => {
+  const p = workspaceFx(NESTED);
+  await buildWorkspace(p);
+
+  const ask = federateAsk(p, undefined, "targetOne callerOne", { limit: 8, in: "a" });
+  assert.ok(ask.hits.length > 0);
+  assert.ok(ask.hits.every((h) => /^a\/[xyz]\//.test(h.pointer)), `container scope leaked: ${ask.hits.map((h) => h.pointer)}`);
+
+  const grep = federateGrep(p, undefined, "callerOne", { in: "a" });
+  assert.equal(grep.result.totalHits, 3, "the folder holds all three children");
+
+  // `a/z/src` exists as a prefix but no child graph has it: no match, no throw.
+  const { result } = federateGrep(p, undefined, "callerOne", { in: "a/z/src" });
+  assert.equal(result.filesSearched, 0);
+  assert.equal(result.totalHits, 0);
+
+  rmSync(p, { recursive: true, force: true });
+});
+
+test("workspace in that names no child fails loudly in every federated tool", async () => {
+  const p = workspaceFx(NESTED);
+  await buildWorkspace(p);
+
+  assert.throws(() => federateAsk(p, undefined, "callerOne", { in: "nope" }), /no workspace repo "nope"/);
+  assert.throws(() => federateGrep(p, undefined, "callerOne", { in: "nope" }), /no workspace repo "nope"/);
+  const callers = federateCallers(p, undefined, "callerOne", { in: "nope" });
+  assert.equal(callers.found, false);
+  assert.match(callers.text, /no workspace repo "nope"/);
+
+  rmSync(p, { recursive: true, force: true });
+});
+
 test("readWorkspace: rejects foreign/invalid json as not-a-workspace", () => {
   const p = mkdtempSync(join(tmpdir(), "ws-"));
   mkdirSync(contextDirFor(p), { recursive: true });
