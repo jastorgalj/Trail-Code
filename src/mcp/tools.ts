@@ -41,6 +41,10 @@ export interface ToolDef {
 
 const noGraph = (): string => `no graph found — run \`${cmd('graft build')}\` first`;
 
+/** Descripción única de `in` usada por las cuatro tools de búsqueda (D8). */
+const IN_DESCRIPTION =
+  'narrow to a path prefix (segment-aware). In a workspace the path is relative to the workspace root and may name a repo, a group of repos or a path inside a repo (e.g. "packages", "packages/api", "packages/api/src"); in a single repo it is relative to the repo root (e.g. "server/src").';
+
 function unknownSymbolText(query: string): string {
   return `no symbol "${query}" in the graph — check spelling or run \`${cmd('graft build')}\``;
 }
@@ -73,7 +77,7 @@ export const TOOLS: ToolDef[] = [
         },
         in: {
           type: 'string',
-          description: 'narrow to nodes under this path prefix, filtered before scoring (segment-aware, like scopeOf)',
+          description: IN_DESCRIPTION,
         },
       },
       required: ['query'],
@@ -124,7 +128,7 @@ export const TOOLS: ToolDef[] = [
           description: '"in" (default) = callers/dependents; "out" = callees/dependencies',
         },
         depth: { description: 'transitive walk depth for blast radius (default 1 = direct edges only); pass "all" for the full connected closure — every source that would be affected' },
-        in: { type: 'string', description: 'narrow matches to nodes at or under this repo-relative path prefix, e.g. server/src' },
+        in: { type: 'string', description: IN_DESCRIPTION },
       },
       required: ['symbol'],
       additionalProperties: false,
@@ -138,7 +142,7 @@ export const TOOLS: ToolDef[] = [
       type: 'object',
       properties: {
         pattern: { type: 'string', description: 'regex pattern (or literal string with fixed: true)' },
-        in: { type: 'string', description: 'narrow to files at or under this repo-relative path prefix, e.g. server/src' },
+        in: { type: 'string', description: IN_DESCRIPTION },
         ignore_case: { type: 'boolean', description: 'case-insensitive match' },
         fixed: { type: 'boolean', description: 'treat pattern as a literal string, not a regex' },
       },
@@ -166,7 +170,7 @@ export const TOOLS: ToolDef[] = [
       properties: {
         query: { type: 'string', description: 'plain-language description of what you are looking for' },
         limit: { type: 'number', description: 'max results (default 5)' },
-        in: { type: 'string', description: 'narrow to a specific repo or path prefix, e.g. "packages/api" or "packages" — searches only children whose path starts with this prefix' },
+        in: { type: 'string', description: IN_DESCRIPTION },
       },
       required: ['query'],
       additionalProperties: false,

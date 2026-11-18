@@ -507,6 +507,8 @@ The model is trained on natural language, so `trail_search_semantic` earns its k
 trail_search_semantic(query="cómo se calcula la cuota mínima", in="default-core", limit=5)
 ```
 
+In a workspace, `in` accepts a repo name (`"default-core/frontend"`), a group of repos by common ancestor (`"default-core"`), or a path inside a repo (`"default-core/frontend/src"`). The rule and error messages are the same in all four tools (`trail_find_code`, `trail_trace_calls`, `trail_find_all`, `trail_search_semantic`): an `in` that matches no repo or group raises `no workspace repo matching "…"`, and an `in` that names a path not indexed in the target repo raises `nothing indexed under "…/"`.
+
 `trail_find_code` and `trail ask` never use embeddings; the header `(lexical)` is expected.
 
 Filter hits below ~0.25 as noise; 0.44+ is a solid hit, 0.50+ high confidence.

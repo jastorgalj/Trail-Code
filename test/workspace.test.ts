@@ -435,7 +435,7 @@ test("federated ask: --in <child> narrows to that child; --in <unknown> errors l
   assert.ok(federateAsk(p, undefined, "handler", { in: "repoA/" }).hits.every((h) => h.scope!.startsWith("repoA")));
   assert.throws(
     () => federateAsk(p, undefined, "handler", { in: "nope" }),
-    /no workspace repo "nope".*repoA.*repoB/s,
+    /no workspace repo matching "nope".*repoA.*repoB/s,
   );
   rmSync(p, { recursive: true, force: true });
 });

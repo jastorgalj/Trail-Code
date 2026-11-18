@@ -128,8 +128,11 @@ trail_search_semantic(query="cuota minima", in="default-core")
 trail ask "EvaluacionDetalle" --in default-core/frontend/
 \`\`\`
 
-En workspaces con repos compound (ej. \`default-core/frontend\`), usar el path
-completo: \`in="default-core"\` no es un scope válido.
+En workspaces con repos compound (ej. \`default-core/frontend\`), \`in\` acepta el
+path completo del repo (\`in="default-core/frontend"\`), un grupo por ancestro común
+(\`in="default-core"\`) o una ruta dentro del repo (\`in="default-core/frontend/src"\`).
+Las cuatro tools (\`trail_find_code\`, \`trail_trace_calls\`, \`trail_find_all\`,
+\`trail_search_semantic\`) usan el mismo resolvedor y el mismo error.
 
 ## Cómo leer el resultado
 

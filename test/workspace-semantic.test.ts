@@ -385,7 +385,7 @@ test(
 );
 
 // ---------------------------------------------------------------------------
-// Scenario: in con subpath sin hits
+// Scenario: in con subpath sin hits → isError (sub-prefijo inexistente es error)
 // ---------------------------------------------------------------------------
 test(
   'in con subpath sin hits',
@@ -404,19 +404,19 @@ test(
         { 'src/b.ts': 'export function betaHandler() { return 2; }\n' },
         { isTrail: true },
       );
-      const queryA = await buildAndEmbed(join(parent, 'repoA'));
+      await buildAndEmbed(join(parent, 'repoA'));
       await buildAndEmbed(join(parent, 'repoB'));
       writeWorkspace(parent, { version: 1, children: ['repoA', 'repoB'] });
 
-      // in:'repoA/nada' → subpath 'nada', no file has path under 'nada/'
+      // in:'repoA/nada' → sub-prefijo 'nada' no indexado en repoA → isError
       const r = await callTool(parent, 'trail_search_semantic', {
-        query: queryA,
+        query: 'anything',
         in: 'repoA/nada',
       });
-      assert.equal(r.isError, false, `expected isError:false: ${r.text}`);
+      assert.equal(r.isError, true, `expected isError:true: ${r.text}`);
       assert.ok(
-        r.text.includes('no semantic matches found across workspace children'),
-        `expected no-match text but got: ${r.text}`,
+        r.text.includes('nothing indexed under "repoA/nada/"'),
+        `expected nothing-indexed error but got: ${r.text}`,
       );
     } finally {
       safeRmSync(parent);
@@ -448,7 +448,7 @@ test(
       });
       assert.equal(r.isError, true, `expected isError:true: ${r.text}`);
       assert.ok(
-        r.text.includes('no workspace repos match "in=nosuch"'),
+        r.text.includes('no workspace repo matching "nosuch"'),
         `expected match error but got: ${r.text}`,
       );
     } finally {
@@ -478,7 +478,7 @@ test(
       });
       assert.equal(r.isError, true, `expected isError:true: ${r.text}`);
       assert.ok(
-        r.text.includes('no workspace repos match "in=repo"'),
+        r.text.includes('no workspace repo matching "repo"'),
         `expected match error but got: ${r.text}`,
       );
     } finally {

@@ -35,61 +35,6 @@ WHEN se llama `trail_search_semantic` y hay un hit
 THEN cada hit se imprime como `N. [<hijo>/]<ruta> · <símbolo>  (score: <número>)` seguido de una línea
 con el snippet, y los hits van separados por una línea en blanco
 
-### Requirement: El parámetro in selecciona hijos
-
-`trail_search_semantic` SHALL tratar `in` (sin `/` finales) como prefijo por segmento de path: busca solo en
-los hijos cuyo path es igual a `in` o empieza con `in/` (un hijo o un grupo). Razón: la documentación
-usa `in="default-core"` para un grupo (`README.md:507`).
-
-#### Scenario: in igual a un hijo
-
-GIVEN un workspace con `repoA` y `repoB` indexados
-WHEN se llama `trail_search_semantic` con `in: "repoB"`
-THEN ningún hit de la respuesta empieza con `[repoA/]`
-
-#### Scenario: in igual a un grupo de hijos
-
-GIVEN un workspace con los hijos `grp/one`, `grp/two` y `other`, los tres indexados
-WHEN se llama `trail_search_semantic` con `in: "grp"`
-THEN los hits provienen solo de `[grp/one/]` y `[grp/two/]`
-
-### Requirement: El parámetro in admite un subpath dentro de un hijo
-
-Si ningún hijo cumple la regla de prefijo y `in` empieza con `<hijo>/`, `trail_search_semantic` SHALL buscar
-solo en ese hijo (el de path más largo) y devolver solo los hits cuya `file_path` es igual al resto o
-empieza con `<resto>/`. Razón: `trail_set_scope` inyecta `in` automáticamente (`src/mcp/server.ts:128-133`)
-y puede apuntar dentro de un hijo.
-
-#### Scenario: in con subpath dentro de un hijo
-
-GIVEN `repoA` con archivos `src/a.ts` y `lib/l.ts` y `repoB` con `src/b.ts`, los tres indexados
-WHEN se llama `trail_search_semantic` con `in: "repoA/src"`
-THEN todo hit empieza con `[repoA/]src/`
-
-#### Scenario: in con subpath sin hits
-
-GIVEN el workspace del escenario anterior
-WHEN se llama `trail_search_semantic` con `in: "repoA/nada"`
-THEN la respuesta es `isError: false` y contiene `no semantic matches found across workspace children`
-
-### Requirement: Un in sin coincidencia es un error
-
-Cuando `in` no iguala ni es ancestro de ningún hijo (por segmento), `trail_search_semantic` SHALL responder
-`isError: true` con `no workspace repos match "in=<in>" — available: <hasta 5 hijos separados por coma>`.
-La coincidencia SHALL ser por segmento de path y no por prefijo de texto.
-
-#### Scenario: in que no nombra ningún hijo
-
-GIVEN un workspace con `repoA` y `repoB`
-WHEN se llama `trail_search_semantic` con `in: "nosuch"`
-THEN la respuesta es `isError: true` y contiene `no workspace repos match "in=nosuch"`
-
-#### Scenario: in coincide por segmento y no por prefijo de texto
-
-GIVEN un workspace con el hijo `repoA`
-WHEN se llama `trail_search_semantic` con `in: "repo"`
-THEN la respuesta es `isError: true` y contiene `no workspace repos match "in=repo"`
-
 ### Requirement: Sin índice en ningún hijo es un error accionable
 
 Cuando ningún hijo en alcance tiene `embeddings.db`, `trail_search_semantic` SHALL responder
