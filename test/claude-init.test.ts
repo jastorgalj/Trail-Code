@@ -30,6 +30,18 @@ test('runInit overwrites a stale skill file', () => {
   assert.match(readFileSync(skillPath, 'utf8'), /name: graft/);
 });
 
+test('runInit says what happened to the skill: created, unchanged, updated, or nothing', () => {
+  const d = fresh(); const home = fresh();
+  const skill = join(home, '.claude', 'skills', 'trail', 'SKILL.md');
+  assert.equal(runInit(d, { build: false, home, brand: 'trail' }).skillAction, 'created');
+  // A re-run that rewrites identical bytes is not a write: a bare "wrote" here
+  // was what made an idempotent init look like it had touched the install.
+  assert.equal(runInit(d, { build: false, home, brand: 'trail' }).skillAction, 'unchanged');
+  writeFileSync(skill, 'stale junk');
+  assert.equal(runInit(d, { build: false, home, brand: 'trail' }).skillAction, 'updated');
+  assert.equal(runInit(d, { build: false, home, brand: 'trail', global: false }).skillAction, '', '--no-global writes no skill');
+});
+
 // --- what the Claude layer does NOT write ---------------------------------
 
 test('runInit under trail leaves the Hermes skill to the hermes host', () => {
