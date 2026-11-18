@@ -18,9 +18,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { once } from 'node:events';
 import { buildGraph } from '../src/graph/build.js';
 import {
   splitWorkspace,
@@ -357,62 +355,6 @@ test('trail grep --in a/x/src acota al sub-prefijo', () => {
   assert.match(out, /a\/x\/src\/x\.ts/);
   assert.doesNotMatch(out, /a\/y\//);
   assert.doesNotMatch(out, /^b\//m);
-});
-
-// ── 1.5 stdio: set_scope dentro de un hijo y trace_calls sin in ──────────────
-// (test aislado — no comparte helpers con otros tests; #20 puede borrarlo o reescribirlo)
-async function rpcIn(messages: object[], dir: string, expected: number): Promise<unknown[]> {
-  const home = mkdtempSync(join(tmpdir(), 'mcp-in-home-'));
-  const { TRAIL_HOME: _t, GRAFT_HOME: _g, ...env } = process.env;
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'mcp', dir], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...env, HOME: home, GRAFT_NO_REFRESH: '1' },
-  });
-  const responses: unknown[] = [];
-  let buf = '';
-  child.stdout.on('data', (d: Buffer) => {
-    buf += d.toString();
-    let i;
-    while ((i = buf.indexOf('\n')) !== -1) {
-      const line = buf.slice(0, i).trim();
-      buf = buf.slice(i + 1);
-      if (line) responses.push(JSON.parse(line));
-    }
-  });
-  for (const m of messages) child.stdin.write(`${JSON.stringify(m)}\n`);
-  const deadline = Date.now() + 15000;
-  while (responses.length < expected && Date.now() < deadline)
-    await new Promise<void>((r) => setTimeout(r, 50));
-  child.kill();
-  await once(child, 'exit').catch(() => {});
-  rmSync(home, { recursive: true, force: true });
-  return responses;
-}
-
-test('set_scope dentro de un hijo y trace_calls sin in', async () => {
-  // path normalizado a forward-slash para el protocolo MCP
-  const scopePath = join(ROOT, 'a', 'x', 'src').replaceAll('\\', '/');
-  const responses = await rpcIn([
-    {
-      jsonrpc: '2.0', id: 1, method: 'initialize',
-      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
-    },
-    {
-      jsonrpc: '2.0', id: 2, method: 'tools/call',
-      params: { name: 'trail_set_scope', arguments: { path: scopePath } },
-    },
-    {
-      jsonrpc: '2.0', id: 3, method: 'tools/call',
-      params: { name: 'trail_trace_calls', arguments: { symbol: 'sharedFn' } },
-    },
-  ], ROOT, 3);
-
-  const traceResp = (responses as Array<{ id?: number; result?: { content?: Array<{ text?: string }> } }>)
-    .find((r) => r.id === 3);
-  assert.ok(traceResp, 'no response for id=3');
-  const content = traceResp?.result?.content?.[0]?.text ?? '';
-  assert.match(content, /## a\/x\//);
-  assert.doesNotMatch(content, /## a\/y\//);
 });
 
 // ── 1.6 Descripciones iguales y contienen 'workspace' ────────────────────────

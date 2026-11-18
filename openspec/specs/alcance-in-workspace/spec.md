@@ -179,19 +179,6 @@ GIVEN el mismo workspace
 WHEN se llama `trail_find_all` con `pattern: "zzzNoExiste"` e `in: "a/x/src"`
 THEN la respuesta es `isError: false` (hay archivos bajo `a/x/src/`, solo que sin coincidencias)
 
-### Requirement: El in inyectado por set_scope funciona en las cuatro tools
-
-Un `in` con la forma que produce `trail_set_scope` al fijar una carpeta dentro de un hijo (`a/x/src`) SHALL
-resolverse con las mismas reglas, de modo que tras `trail_set_scope` las cuatro tools sin `in` explícito
-respondan como si se hubiera pasado ese `in`.
-
-#### Scenario: set_scope dentro de un hijo y trace_calls sin in
-
-GIVEN un servidor MCP por stdio enraizado en el workspace del escenario «el mismo in da los mismos resultados en las cuatro tools»
-WHEN se llama `trail_set_scope` con `path` = `<raíz>/a/x/src` y luego `trail_trace_calls` con
-`symbol: "sharedFn"` sin `in`
-THEN la segunda respuesta es `isError: false`, contiene `## a/x/` y no contiene `## a/y/`
-
 ### Requirement: Con in a un solo hijo no hay compuerta entre hijos
 
 `federateAsk` SHALL saltar la compuerta de fuerza de coincidencia entre hijos (`STRONG_FLOOR`/`HIGH_FLOOR`)

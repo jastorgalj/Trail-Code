@@ -738,3 +738,39 @@ test('Scenario: array con scope fijado — stdio', async () => {
   assert.equal(call.result.isError, true);
   assert.equal(call.result.content[0].text, 'arguments for trail_find_all must be an object');
 });
+
+// ── Requirement: Validación de ruta en set_scope ──────────────────────────────
+
+test('Scenario: set_scope con ruta inexistente retorna isError — stdio', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-args-nonexist-'));
+  const rs = await rpc(
+    [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '0' } } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'trail_set_scope', arguments: { path: dir.replace(/\\/g, '/') + '/does-not-exist' } } },
+    ],
+    dir,
+    2,
+  );
+  const call = rs.find((r: any) => r.id === 2);
+  assert.equal(call.result.isError, true);
+  assert.match(call.result.content[0].text, /is not an existing directory/);
+});
+
+test('Scenario: set_scope con un archivo retorna isError — stdio', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-args-file-'));
+  const filePath = join(dir, 'file.ts');
+  writeFileSync(filePath, 'export const x = 1;\n');
+  const rs = await rpc(
+    [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '0' } } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'trail_set_scope', arguments: { path: filePath.replace(/\\/g, '/') } } },
+    ],
+    dir,
+    2,
+  );
+  const call = rs.find((r: any) => r.id === 2);
+  assert.equal(call.result.isError, true);
+  assert.match(call.result.content[0].text, /is not an existing directory/);
+});
