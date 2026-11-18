@@ -72,6 +72,23 @@ function multiDirRepo(): string {
   return d;
 }
 
+/** 300 functions each containing 'capTestMarker' on 2 lines (comment + name).
+ * Raw find_all output on this repo exceeds 20 KB, exercising capToolOutput inside callTool. */
+function bigRepo(): string {
+  const d = mkdtempSync(join(tmpdir(), 'graft-mcptools-big-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  let src = '';
+  for (let i = 0; i < 100; i++) {
+    const idx = String(i).padStart(3, '0');
+    src +=
+      `// capTestMarker-comment-${idx}: filler line long enough to push find_all output past 20 KB so callTool must apply capToolOutput\n` +
+      `export function capTestMarkerFn${idx}(x: number): number { return x + ${i}; }\n`;
+  }
+  writeFileSync(join(d, 'src', 'big.ts'), src);
+  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+  return d;
+}
+
 test('TOOLS lists the six tools with schemas', async () => {
   assert.deepEqual(TOOLS.map((t) => t.name), [
     'graft_find_code',
@@ -244,6 +261,20 @@ test('capToolOutput: bounds any tool response and says what was cut', () => {
   const capped = capToolOutput(big);
   assert.ok(capped.length < big.length);
   assert.match(capped, /\(truncated: response capped at 20 KB — 4\.9 KB omitted; narrow with in=, a lower limit, or a more specific query\)/);
+});
+
+test('callTool: capToolOutput is wired — find_all on a large repo stays within 20 KB', async () => {
+  // 100 functions × 2 lines containing 'capTestMarker' each = ~200 hits;
+  // the raw find_all output is ~48 KB before the cap.
+  const d = bigRepo();
+  const r = await callTool(d, 'graft_find_all', { pattern: 'capTestMarker', limit: 1000 });
+  assert.equal(r.isError, false);
+  // The raw output exceeds 20 KB; callTool must cap it via capToolOutput (tools.ts:354).
+  assert.ok(
+    r.text.length <= MAX_TOOL_OUTPUT_CHARS + 300,
+    `expected text to be capped at ~${MAX_TOOL_OUTPUT_CHARS} chars, got ${r.text.length}`,
+  );
+  assert.match(r.text, /\(truncated: response capped at 20 KB/);
 });
 
 test('graft_find_all: no hits is a soft (non-error) result with the loud fallback note', async () => {

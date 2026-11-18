@@ -59,7 +59,7 @@ export const MAX_TOOL_OUTPUT_CHARS = 20_000;
 /** `limit` arg of `trail_find_all`: a positive integer, else the MCP default. */
 function findAllLimit(args: Record<string, unknown>): number {
   const n = args.limit;
-  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_FIND_ALL_LIMIT;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.max(1, Math.floor(n)) : DEFAULT_FIND_ALL_LIMIT;
 }
 
 /** Cap a rendered tool response, keeping whole lines and naming what was cut.
