@@ -966,19 +966,33 @@ export { formatGrepResult, zeroHitNote };
  *
  * Errors (missing index, failed search) are reported, not swallowed.
  */
+export interface SemanticFederation {
+  /** Single-channel rendering (MCP has only text): hits, coverage, failures. */
+  text: string;
+  isError: boolean;
+  /** The hits block — or the one line explaining why there is no hit list. */
+  answer: string;
+  /** Coverage lines: selected children that have no index. */
+  notes: string[];
+  /** Per-child failures. Diagnostics, never counted as results. */
+  errors: string[];
+  /** Hits kept after `limit`; 0 means nothing matched. */
+  found: number;
+}
+
 export async function federateSemantic(
   root: string,
   override: string | undefined,
   query: string,
   limit: number,
   inScope?: string,
-): Promise<{ text: string; isError: boolean }> {
+): Promise<SemanticFederation> {
   const wg = loadWorkspaceGraphs(root, override);
 
   // ── Resolve scope from `in` using the shared resolver ───────────────────
   const scoped = scopeWorkspaceGraphs(wg, inScope);
   if (!scoped.ok) {
-    return { text: scoped.message, isError: true };
+    return { text: scoped.message, isError: true, answer: scoped.message, notes: [], errors: [], found: 0 };
   }
   // Children in scope (loaded + missing), sorted for determinism
   const selectedChildren = [...scoped.children.map((c) => c.child), ...scoped.missing].sort();
@@ -995,10 +1009,8 @@ export async function federateSemantic(
   }
 
   if (withIndex.length === 0) {
-    return {
-      text: `0 of ${selectedChildren.length} workspace repos have a semantic index; run trail build to cover ${selectedChildren.join(', ')}`,
-      isError: true,
-    };
+    const diagnosis = `0 of ${selectedChildren.length} workspace repos have a semantic index; run trail build to cover ${selectedChildren.join(', ')}`;
+    return { text: diagnosis, isError: true, answer: diagnosis, notes: [], errors: [], found: 0 };
   }
 
   // ── Search each indexed child ──────────────────────────────────────────────
@@ -1045,13 +1057,11 @@ export async function federateSemantic(
   }
 
   // ── Compose response ───────────────────────────────────────────────────────
-  const extraLines: string[] = [];
-  if (noIndex.length > 0) {
-    extraLines.push(
-      `${withIndex.length} of ${selectedChildren.length} workspace repos have a semantic index; run trail build to cover ${noIndex.join(', ')}`,
-    );
-  }
-  extraLines.push(...failLines);
+  const coverageLine =
+    noIndex.length > 0
+      ? `${withIndex.length} of ${selectedChildren.length} workspace repos have a semantic index; run trail build to cover ${noIndex.join(', ')}`
+      : undefined;
+  const extraLines: string[] = [...(coverageLine ? [coverageLine] : []), ...failLines];
 
   const isError = successCount === 0;
 
@@ -1068,5 +1078,12 @@ export async function federateSemantic(
   const text =
     extraLines.length > 0 ? `${hitText}\n\n${extraLines.join('\n')}` : hitText;
 
-  return { text, isError };
+  return {
+    text,
+    isError,
+    answer: hitText,
+    notes: coverageLine ? [coverageLine] : [],
+    errors: failLines,
+    found: top.length,
+  };
 }

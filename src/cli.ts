@@ -26,7 +26,7 @@ import { runHostsInit } from "./hosts/init.js";
 import { agentList, autoSelection, autoSummary } from "./hosts/auto.js";
 import { asksForTrail, brand, cmd, graftNotice, inBrand, PACKAGE_FOR, setBrand, strandedRepoNotice, tag, trailOnPath } from "./brand.js";
 import { openBrowser } from "./util/browser.js";
-import { contextDirFor } from "./context/node-file.js";
+import { CACHE_DIR, contextDirFor } from "./context/node-file.js";
 import { loadGraphCached } from "./graph/load.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refresh.js";
 import { isWorkspaceBuildRoot, loadWorkspaceGraphs, readWorkspace, writeWorkspace } from "./graph/workspace.js";
@@ -41,6 +41,7 @@ import {
   runWorkspaceCheck,
   runWorkspaceGrep,
   runWorkspaceMap,
+  runWorkspaceSemantic,
 } from "./graph/workspace-cli.js";
 import { formatInitEpilogue } from "./cli-epilogue.js";
 import { planInit, selectedWrites } from "./hosts/plan.js";
@@ -810,37 +811,36 @@ grouped(program.command("ask"), GROUP.find)
     if (opts.semantic) {
       const limit = Number(opts.limit);
       const { searchSemantic } = await import('./ask/semantic.js');
-      const { contextDirFor } = await import('./context/node-file.js');
-      const ws = readWorkspace(dir, askGlobalDir);
-      const results: Array<{ score: number; file_path: string; symbol: string; snippet: string }> = [];
-      const children = ws?.children ?? [];
-      if (children.length > 0) {
-        // Workspace: search each child's DB.
-        const { join: pjoin } = await import('node:path');
-        for (const child of children) {
-          const childCtx = contextDirFor(join(dir, child));
-          const db = pjoin(childCtx, '.cache', 'embeddings.db');
-          if (!existsSync(db)) continue;
-          try {
-            const hits = await searchSemantic(query, db, limit);
-            hits.forEach(h => results.push({ ...h, file_path: h.file_path.startsWith(child) ? h.file_path : `${child}/${h.file_path}` }));
-          } catch { /* DB not ready */ }
-        }
-      } else {
-        // Single repo.
-        const ctx = contextDirFor(dir, askGlobalDir);
-        const db = join(ctx, '.cache', 'embeddings.db');
-        if (existsSync(db)) {
-          try { (await searchSemantic(query, db, limit)).forEach(h => results.push(h)); } catch { /* DB not ready */ }
-        }
+      // Workspace: the federated body the MCP tool uses — one implementation, so
+      // `--in`, the coverage note and per-child failures cannot drift apart.
+      if (readWorkspace(dir, askGlobalDir)) {
+        await runWorkspaceSemantic(dir, askGlobalDir, query, { limit, in: opts.in });
+        return;
       }
-      if (results.length === 0) {
-        console.error('no semantic matches found — run `trail build` to build the semantic index');
+      const db = join(contextDirFor(dir, askGlobalDir), CACHE_DIR, 'embeddings.db');
+      if (!existsSync(db)) {
+        // No index and no matches are different states: say which one it is.
+        console.error(`no semantic index for ${dir} — run \`trail build\` to build it`);
         process.exitCode = 1;
         return;
       }
-      results.sort((a, b) => b.score - a.score);
-      results.slice(0, limit).filter(h => h.score > 0.05).forEach((h, i) => {
+      let hits;
+      try {
+        hits = await searchSemantic(query, db, limit);
+      } catch (err) {
+        // An unreadable index used to read as "no matches": report it and fail.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`semantic search failed: ${msg.split('\n')[0]}`);
+        process.exitCode = 1;
+        return;
+      }
+      const shown = hits.sort((a, b) => b.score - a.score).slice(0, limit).filter(h => h.score > 0.05);
+      if (shown.length === 0) {
+        console.error('no semantic matches found');
+        process.exitCode = 1;
+        return;
+      }
+      shown.forEach((h, i) => {
         console.log(`${i + 1}. ${h.file_path} · ${h.symbol}  (score: ${h.score.toFixed(3)})\n   ${h.snippet}`);
       });
       return;
