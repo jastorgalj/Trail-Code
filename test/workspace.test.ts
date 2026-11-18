@@ -586,10 +586,13 @@ test("workspace in=<folder holding children>: every federated tool narrows to th
   const grep = federateGrep(p, undefined, "callerOne", { in: "a" });
   assert.equal(grep.result.totalHits, 3, "the folder holds all three children");
 
-  // `a/z/src` exists as a prefix but no child graph has it: no match, no throw.
-  const { result } = federateGrep(p, undefined, "callerOne", { in: "a/z/src" });
-  assert.equal(result.filesSearched, 0);
-  assert.equal(result.totalHits, 0);
+  // `a/z/src` apunta al hijo `a/z` con subpath `src`, pero `a/z` no tiene nodos bajo `src/`.
+  // P3: sub-prefijo inexistente en el hijo único = error (not a silent skip).
+  assert.throws(
+    () => federateGrep(p, undefined, "callerOne", { in: "a/z/src" }),
+    /nothing indexed under "a\/z\/src\//,
+    "P3: a/z has no src/ — must throw, not silently return 0 hits",
+  );
 
   rmSync(p, { recursive: true, force: true });
 });
@@ -598,11 +601,11 @@ test("workspace in that names no child fails loudly in every federated tool", as
   const p = workspaceFx(NESTED);
   await buildWorkspace(p);
 
-  assert.throws(() => federateAsk(p, undefined, "callerOne", { in: "nope" }), /no workspace repo "nope"/);
-  assert.throws(() => federateGrep(p, undefined, "callerOne", { in: "nope" }), /no workspace repo "nope"/);
+  assert.throws(() => federateAsk(p, undefined, "callerOne", { in: "nope" }), /no workspace repo matching "nope"/);
+  assert.throws(() => federateGrep(p, undefined, "callerOne", { in: "nope" }), /no workspace repo matching "nope"/);
   const callers = federateCallers(p, undefined, "callerOne", { in: "nope" });
   assert.equal(callers.found, false);
-  assert.match(callers.text, /no workspace repo "nope"/);
+  assert.match(callers.text, /no workspace repo matching "nope"/);
 
   rmSync(p, { recursive: true, force: true });
 });

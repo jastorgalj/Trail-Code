@@ -103,3 +103,29 @@ con las pruebas de #20.
   sub-prefijo. Un hijo con `embeddings.db` pero sin grafo no se valida (se trata como `missing`).
 - Cambio de contrato visible para el agente: un `in` con grupo ahora funciona en `find_code`; un typo de
   sub-prefijo ahora es error en vez de «sin resultados». Ambos son el comportamiento del camino de un solo repo.
+
+## Consolidación con #28
+
+PR #28 (`7349225`) mergeó a `main` mientras nuestra rama estaba en revisión. Implementó su propio
+`resolveWorkspaceIn(wg: WorkspaceGraphs, inScope: string)` en `src/graph/workspace.ts`, con
+`noWorkspaceRepoMessage` y `resolveInChild`. El consolidado (commit `b83d566`) elige nuestra estructura
+(`resolveWorkspaceIn(children[], inArg)` pura + `scopeWorkspaceGraphs(wg, inArg)`) sobre la de #28 por
+dos razones:
+
+1. **Menor superficie de incumplimiento de spec.** #28 contradice P2 (mensaje de `trace_calls` distinto:
+   `no workspace repos match "in=..."`) y P3 (`resolveInChild` silencia el error de sub-prefijo inexistente
+   con un `catch { return [] }`). Adoptar la firma de #28 y parchear esos dos puntos habría requerido más
+   cambios que tomar la nuestra como base.
+
+2. **Función pura + wrapper = menor blast radius para #15 y #18.** `resolveWorkspaceIn(children[], inArg)`
+   no depende de `WorkspaceGraphs` y es trivial de probar sin fixtures de workspace. `scopeWorkspaceGraphs`
+   centraliza la validación de sub-prefijo en un único lugar.
+
+**Tests de #28 ajustados (justificación):**
+
+| Test / línea | Ajuste | Razón |
+|---|---|---|
+| `workspace in that names no child fails loudly` (L601–604) | regex `/no workspace repo "nope"/` → `/no workspace repo matching "nope"/` | P2: el spec manda "matching" en el mensaje |
+| `workspace in=<folder> … a/z/src` (L589–592) | `result.filesSearched=0, totalHits=0` → `assert.throws /nothing indexed under "a\/z\/src\//` | P3: sub-prefijo inexistente debe lanzar error, no silenciarse |
+
+La función `noWorkspaceRepoMessage` y `resolveInChild` de #28 se eliminan (redundantes y la segunda viola P3).
