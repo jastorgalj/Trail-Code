@@ -18,7 +18,7 @@ la consulta.
 GIVEN un repo con grafo construido que contiene la función `add`
 WHEN se llama `trail_find_all` con `{ "pattern": "add", "paths": "a" }`
 THEN la respuesta tiene `isError: true`, el texto contiene `unknown argument "paths" (did you mean "in"?) for trail_find_all`
-y `expected one of: pattern, in, ignore_case, fixed`, y no contiene ningún resultado de búsqueda
+y `expected one of: pattern, in, limit, ignore_case, fixed`, y no contiene ningún resultado de búsqueda
 
 #### Scenario: varias claves desconocidas
 
@@ -93,7 +93,7 @@ SHALL ser el nombre anunciado en `tools/list` (`trail_*`), nunca `graft_*`.
 GIVEN cualquier repo
 WHEN se llama `trail_find_all` con `{ "query": "x" }`
 THEN el texto es exactamente `unknown argument "query" (did you mean "pattern"?) for trail_find_all;
-missing required argument "pattern"; expected one of: pattern, in, ignore_case, fixed` con
+missing required argument "pattern"; expected one of: pattern, in, limit, ignore_case, fixed` con
 `isError: true`
 
 #### Scenario: set_scope con paths en vez de path

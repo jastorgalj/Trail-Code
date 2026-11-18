@@ -768,7 +768,7 @@ export function federateGrep(
   root: string,
   override: string | undefined,
   pattern: string,
-  opts: { ignoreCase?: boolean; fixed?: boolean; in?: string } = {},
+  opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; maxHits?: number } = {},
 ): { result: GrepResult; coverage: string } {
   const wg = loadWorkspaceGraphs(root, override);
 
@@ -789,6 +789,7 @@ export function federateGrep(
       ignoreCase: opts.ignoreCase,
       fixed: opts.fixed,
       in: childIn,
+      maxHits: opts.maxHits,
     });
     filesSearched += r.filesSearched;
     totalHits += r.totalHits;
@@ -808,8 +809,30 @@ export function federateGrep(
   }
 
   groups.sort((a, b) => b.inDegree - a.inDegree || a.path.localeCompare(b.path));
+  // Each child capped itself at `maxHits`; that still lets a workspace answer
+  // grow to children × maxHits (29 repos × 300 = ~8,700 hits, 115 KB — issue
+  // #18). So the cap is applied again over the MERGED, coupling-ranked list:
+  // the kept hits are the most-depended-on ones, and the remainder is counted
+  // into truncated.hits rather than silently dropped.
+  let keptGroups = groups;
+  let keptHits = totalHits;
+  if (opts.maxHits !== undefined) {
+    keptGroups = [];
+    let budget = opts.maxHits;
+    for (const g of groups) {
+      if (budget >= g.hits.length) {
+        keptGroups.push(g);
+        budget -= g.hits.length;
+        continue;
+      }
+      if (budget > 0) keptGroups.push({ ...g, hits: g.hits.slice(0, budget) });
+      budget = 0;
+    }
+    keptHits = keptGroups.reduce((n, g) => n + g.hits.length, 0);
+    truncated.hits += totalHits - keptHits;
+  }
   const saved: Savings | undefined = savedChars > 0 ? { files: savedFiles, baselineChars: savedChars } : undefined;
-  const result: GrepResult = { pattern, filesSearched, totalHits, groups, truncated, saved };
+  const result: GrepResult = { pattern, filesSearched, totalHits: keptHits, groups: keptGroups, truncated, saved };
   return { result, coverage: coverageNote(wg) };
 }
 

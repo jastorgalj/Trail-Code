@@ -1236,6 +1236,7 @@ grouped(program.command("grep"), GROUP.find)
   .option("-i, --ignore-case", "case-insensitive match")
   .option("--fixed", "treat pattern as a literal string, not a regex")
   .option("--in <path>", "narrow to files at or under this path prefix")
+  .option("--limit <n>", "max hits returned for the whole answer; the rest are counted in the truncation note (default 300 per repo)")
   .option("--json", "output as JSON")
   .option(...NO_REFRESH_FLAG)
   .option(...QUIET_FLAG)
@@ -1243,14 +1244,24 @@ grouped(program.command("grep"), GROUP.find)
     async (
       pattern: string,
       dirArg: string | undefined,
-      opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; json?: boolean; refresh?: boolean; quiet?: boolean },
+      opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; limit?: string; json?: boolean; refresh?: boolean; quiet?: boolean },
     ) => {
+      let maxHits: number | undefined;
+      if (opts.limit !== undefined) {
+        const n = parseInt(opts.limit, 10);
+        if (!Number.isFinite(n) || n <= 0) {
+          console.error(`✗ --limit must be a positive integer, got "${opts.limit}"`);
+          process.exit(1);
+          return;
+        }
+        maxHits = n;
+      }
       const dir = noteQuery(queryRoot(dirArg));
       await refreshBefore(dir, opts);
       const globalOpts = program.opts<{ dir?: string }>();
       if (readWorkspace(dir, globalOpts.dir)) {
         runWorkspaceGrep(dir, globalOpts.dir, pattern, {
-          ignoreCase: opts.ignoreCase, fixed: opts.fixed, in: opts.in, json: opts.json,
+          ignoreCase: opts.ignoreCase, fixed: opts.fixed, in: opts.in, maxHits, json: opts.json,
         });
         return;
       }
@@ -1259,6 +1270,7 @@ grouped(program.command("grep"), GROUP.find)
         ignoreCase: opts.ignoreCase,
         fixed: opts.fixed,
         in: opts.in,
+        maxHits,
         json: opts.json,
         globalDir: globalOpts.dir,
       });

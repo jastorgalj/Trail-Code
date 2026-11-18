@@ -327,6 +327,7 @@ trail ask "<task>" --semantic        # search the vector index instead of the le
 
 trail grep "<regex>" [dir]           # exhaustive regex search over indexed files, grouped by enclosing symbol (no LLM, no key)
 trail grep "<regex>" --in <path>     # narrow to files at or under this path prefix
+trail grep "<regex>" --limit N       # cap the hits returned for the whole answer (workspace-wide), rest counted in a truncation note
 trail grep "<regex>" -i --fixed      # case-insensitive; treat the pattern as a literal string, not a regex
 
 trail skeleton <file> [dir]          # every signature in one file, no bodies: the API surface for ~1/10th the tokens

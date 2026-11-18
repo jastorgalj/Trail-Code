@@ -132,12 +132,13 @@ export function runWorkspaceGrep(
   root: string,
   override: string | undefined,
   pattern: string,
-  opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; json?: boolean },
+  opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; maxHits?: number; json?: boolean },
 ): void {
   const { result, coverage } = federateGrep(root, override, pattern, {
     ignoreCase: opts.ignoreCase,
     fixed: opts.fixed,
     in: opts.in,
+    maxHits: opts.maxHits,
   });
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2));

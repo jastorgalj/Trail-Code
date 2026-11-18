@@ -367,6 +367,27 @@ test("grep federation merges groups across children with child-prefixed paths", 
   rmSync(p, { recursive: true, force: true });
 });
 
+test("grep federation: `maxHits` caps the WHOLE answer, not one child (issue #18)", async () => {
+  const body = 'const one = "needle";\nconst two = "needle";\nconst three = "needle";\n';
+  const p = workspaceFx({
+    repoA: { "a.ts": body },
+    repoB: { "b.ts": body },
+  });
+  await buildWorkspace(p);
+
+  // 6 matches in the workspace (3 per child). A per-child cap alone would still
+  // return 6 — the bug: N repos × the single-repo cap, 115 KB for one query.
+  const { result } = federateGrep(p, undefined, "needle", { maxHits: 2 });
+  assert.equal(result.totalHits, 2, "the cap is global across children");
+  assert.equal(result.groups.reduce((n, g) => n + g.hits.length, 0), 2);
+  assert.equal(result.truncated.hits, 4, "the 4 omitted hits are counted, never dropped silently");
+
+  const unbounded = federateGrep(p, undefined, "needle", {});
+  assert.equal(unbounded.result.totalHits, 6, "no maxHits keeps every hit");
+
+  rmSync(p, { recursive: true, force: true });
+});
+
 test("one unbuilt child is surfaced, not silently skipped", async () => {
   const p = workspaceFx({
     ...REPOS,

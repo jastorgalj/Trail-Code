@@ -45,6 +45,34 @@ const noGraph = (): string => `no graph found — run \`${cmd('graft build')}\` 
 const IN_DESCRIPTION =
   'narrow to a path prefix (segment-aware). In a workspace the path is relative to the workspace root and may name a repo, a group of repos or a path inside a repo (e.g. "packages", "packages/api", "packages/api/src"); in a single repo it is relative to the repo root (e.g. "server/src").';
 
+/** Hits returned by `trail_find_all` when the caller passes no `limit`. The
+ * core default (300) is a CLI-sized answer; over MCP the same call lands in a
+ * model's context, where 300 hits × 160 chars of line text is the 115 KB
+ * response issue #18 was filed for. */
+const DEFAULT_FIND_ALL_LIMIT = 50;
+
+/** Ceiling on any single tool response, in characters (~20 KB ≈ 5k tokens).
+ * A limit bounds hits, not bytes — many hits inside many symbols still add up,
+ * so the cap is applied to the rendered text as the last line of defense. */
+export const MAX_TOOL_OUTPUT_CHARS = 20_000;
+
+/** `limit` arg of `trail_find_all`: a positive integer, else the MCP default. */
+function findAllLimit(args: Record<string, unknown>): number {
+  const n = args.limit;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_FIND_ALL_LIMIT;
+}
+
+/** Cap a rendered tool response, keeping whole lines and naming what was cut.
+ * Silence here would read as "that's everything" — the one thing a truncated
+ * answer must never imply. */
+export function capToolOutput(text: string): string {
+  if (text.length <= MAX_TOOL_OUTPUT_CHARS) return text;
+  const newline = text.lastIndexOf('\n', MAX_TOOL_OUTPUT_CHARS);
+  const kept = text.slice(0, newline > 0 ? newline : MAX_TOOL_OUTPUT_CHARS);
+  const omittedKb = ((text.length - kept.length) / 1024).toFixed(1);
+  return `${kept}\n\n(truncated: response capped at ${MAX_TOOL_OUTPUT_CHARS / 1000} KB — ${omittedKb} KB omitted; narrow with in=, a lower limit, or a more specific query)`;
+}
+
 function unknownSymbolText(query: string): string {
   return `no symbol "${query}" in the graph — check spelling or run \`${cmd('graft build')}\``;
 }
@@ -143,6 +171,7 @@ export const TOOLS: ToolDef[] = [
       properties: {
         pattern: { type: 'string', description: 'regex pattern (or literal string with fixed: true)' },
         in: { type: 'string', description: IN_DESCRIPTION },
+        limit: { type: 'number', description: 'max hits returned for the whole answer (default 50); the rest are counted in the truncation note at the top — lower it, or narrow with in=, before retrying a cap' },
         ignore_case: { type: 'boolean', description: 'case-insensitive match' },
         fixed: { type: 'boolean', description: 'treat pattern as a literal string, not a regex' },
       },
@@ -235,6 +264,7 @@ async function callWorkspaceTool(
         ignoreCase: typeof args.ignore_case === 'boolean' ? args.ignore_case : undefined,
         fixed: typeof args.fixed === 'boolean' ? args.fixed : undefined,
         in: typeof args.in === 'string' && args.in ? args.in : undefined,
+        maxHits: findAllLimit(args),
       });
       const text = result.totalHits === 0 ? zeroHitNote(result) : formatGrepResult(result);
       return { text: result.totalHits === 0 && coverage ? `${text}\n${coverage}` : text, isError: false };
@@ -319,7 +349,9 @@ export async function callTool(
     }
     const fed = ws ? await callWorkspaceTool(root, dirOverride, name, args) : null;
     const res = fed ?? (await callSingleTool(root, name, args, dirOverride));
-    return note ? { ...res, text: `${note}\n${res.text}` } : res;
+    // Hard ceiling AFTER the refresh note: whatever the tool, the host gets a
+    // bounded response and a note saying it was cut (issue #18).
+    return { ...res, text: capToolOutput(note ? `${note}\n${res.text}` : res.text) };
   } catch (err) {
     return { text: err instanceof Error ? err.message : String(err), isError: true };
   }
@@ -418,6 +450,7 @@ async function callSingleTool(
           ignoreCase: typeof args.ignore_case === 'boolean' ? args.ignore_case : undefined,
           fixed: typeof args.fixed === 'boolean' ? args.fixed : undefined,
           in: typeof args.in === 'string' && args.in ? args.in : undefined,
+          maxHits: findAllLimit(args),
         });
         if (result.totalHits === 0) return { text: zeroHitNote(result, ignoredCode(root)), isError: false };
         return { text: formatGrepResult(result), isError: false };

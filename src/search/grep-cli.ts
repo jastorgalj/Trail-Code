@@ -19,6 +19,8 @@ export interface GrepCliOptions {
   ignoreCase?: boolean;
   fixed?: boolean;
   in?: string;
+  /** Global hit cap for the whole answer (`--limit`). Default 300 in one repo. */
+  maxHits?: number;
   json?: boolean;
   /** the top-level `--dir` override, so this command respects it like every other. */
   globalDir?: string;
@@ -48,7 +50,7 @@ function truncationNote(result: GrepResult): string | null {
   const parts: string[] = [];
   if (hits > 0) parts.push(`${hits} more hit${hits === 1 ? "" : "s"} beyond the cap`);
   if (files > 0) parts.push(`${files} indexed file${files === 1 ? "" : "s"} unreadable`);
-  return `(truncated: ${parts.join(", ")} — narrow with --in or refine the pattern)`;
+  return `(truncated: ${parts.join(", ")} — narrow with in=, a lower --limit, or a more specific pattern)`;
 }
 
 /** Full human report: header, blank line, then one block per group (header +
@@ -103,7 +105,12 @@ export function runGrepCommand(pattern: string, dir: string, opts: GrepCliOption
 
   let result: GrepResult;
   try {
-    result = grepGraph(graph, root, pattern, { ignoreCase: opts.ignoreCase, fixed: opts.fixed, in: opts.in });
+    result = grepGraph(graph, root, pattern, {
+      ignoreCase: opts.ignoreCase,
+      fixed: opts.fixed,
+      in: opts.in,
+      maxHits: opts.maxHits,
+    });
   } catch (err) {
     // `new RegExp` throws SyntaxError; anything else (an unindexed `--in` prefix)
     // is a different mistake and must not be reported as a bad pattern.
