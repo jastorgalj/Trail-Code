@@ -21,8 +21,8 @@
  * CLI print/exit wrappers and the per-child build orchestration live in
  * `workspace-cli.ts`; `mcp/tools.ts` calls the federate* functions directly.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve, dirname, isAbsolute, relative as relativePath } from "node:path";
 import { contextDirFor, CACHE_DIR } from "../context/node-file.js";
 import { checkGraph } from "./check.js";
 import { loadGraphCached } from "./load.js";
@@ -219,21 +219,114 @@ export interface WorkspaceGraphs {
   missing: string[];
 }
 
-/** Load each child's graph via `loadGraphCached`. Children come from
- * workspace.json when present, otherwise from live git-child discovery (a
- * not-yet-built workspace). A child without a built graph is counted into
- * `missing`, not dropped. */
-export function loadWorkspaceGraphs(root: string, override?: string): WorkspaceGraphs {
+/** Los hijos de un workspace: los de `workspace.json` cuando existe, si no la
+ * discovery viva de git-children (un workspace aún sin construir). */
+function workspaceChildList(root: string, override?: string): string[] {
   const ws = readWorkspace(root, override);
-  const children = (ws ? ws.children : discoverWorkspaceChildren(root)).slice().sort();
+  return (ws ? ws.children : discoverWorkspaceChildren(root)).slice().sort();
+}
+
+/** Carga el grafo de cada hijo vía `loadGraphCached`. Un hijo sin grafo construido
+ * se cuenta en `missing`, no se descarta. */
+export function loadWorkspaceGraphs(root: string, override?: string): WorkspaceGraphs {
   const loaded: LoadedChild[] = [];
   const missing: string[] = [];
-  for (const child of children) {
+  for (const child of workspaceChildList(root, override)) {
     const graph = loadGraphCached(contextDirFor(join(root, child)));
     if (graph) loaded.push({ child, graph });
     else missing.push(child);
   }
   return { loaded, missing };
+}
+
+// ── Worktrees enlazados dentro de un hijo ─────────────────────────────────────
+
+/** Carpeta donde el harness (y el README) crea los worktrees de un repo. */
+const WORKTREES_DIR = ".worktrees";
+
+/** ¿`dir/.git` es un ARCHIVO (puntero a un worktree enlazado)? Mismo criterio que
+ * `scopes.ts` usa para no contar un worktree como repo independiente. */
+function isLinkedWorktreeDir(dir: string): boolean {
+  try {
+    return statSync(join(dir, ".git")).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Un worktree enlazado de un hijo, con el resto del path como sub-prefijo. */
+export interface WorktreeInScope {
+  /** Path del worktree relativo al workspace: `backend/.worktrees/feature-x`. */
+  child: string;
+  /** Resto del `in` DENTRO del worktree (el grafo del worktree se enraiza ahí). */
+  subpath?: string;
+}
+
+/**
+ * Resuelve un `in` que apunta DENTRO de un worktree enlazado de un hijo conocido
+ * — `<hijo>/.worktrees/<rama>` y cualquier cosa debajo — a ese worktree, o null
+ * cuando no lo es (que es el caso común y no un error).
+ *
+ * Un worktree no es un hijo del workspace (comparte repo con su checkout
+ * principal), así que sin esto el `in` no matchea ningún hijo y la consulta
+ * responde "no workspace repo". El path puede venir relativo al workspace o
+ * absoluto; se acepta también la ruta del worktree sin sub-prefijo.
+ */
+export function resolveWorktreeIn(
+  root: string,
+  inArg: string,
+  override?: string,
+): WorktreeInScope | null {
+  const absRoot = resolve(root);
+  // Absoluto → relativo al workspace (solo si está adentro); si no, no matchea.
+  // La comparación es posix a ambos lados porque `normalizePathPrefix` ya convirtió
+  // el `in`, y en Windows `resolve()` devuelve separadores nativos.
+  let normalized = normalizePathPrefix(inArg);
+  if (isAbsolute(inArg)) {
+    const absRootPosix = normalizePathPrefix(absRoot);
+    if (!normalized.startsWith(`${absRootPosix}/`)) return null;
+    normalized = normalizePathPrefix(relativePath(absRoot, inArg));
+  }
+  if (!normalized || !normalized.includes(`/${WORKTREES_DIR}/`)) return null;
+
+  const child = workspaceChildList(root, override)
+    .filter((c) => normalized === c || normalized.startsWith(`${c}/`))
+    .sort((a, b) => b.length - a.length)[0];
+  if (!child) return null;
+
+  const segments = normalized.slice(child.length + 1).split("/");
+  // `<hijo>/.worktrees/<rama>` — dos segmentos como mínimo; `.worktrees` solo no es
+  // un worktree, y un nombre con `/` de más pertenece al sub-prefijo.
+  if (segments[0] !== WORKTREES_DIR || segments.length < 2 || !segments[1]) return null;
+  const wtRel = `${child}/${WORKTREES_DIR}/${segments[1]}`;
+  if (!isLinkedWorktreeDir(join(absRoot, wtRel))) return null;
+  return { child: wtRel, subpath: segments.slice(2).join("/") || undefined };
+}
+
+/** `loadWorkspaceGraphs` más el worktree que nombra `inArg`, con el `in` ya
+ * normalizado contra la lista de hijos (absoluto → relativo). El grafo del
+ * worktree lo siembra/refresca el gate de la query (`ensureFreshWorktreeIn`);
+ * acá solo se lee, y si aún no existe se suma a `missing` para que la respuesta
+ * lo diga en vez de inventar cero resultados. */
+export function workspaceGraphsForIn(
+  root: string,
+  override: string | undefined,
+  inArg: string | undefined,
+): { graphs: WorkspaceGraphs; in: string | undefined } {
+  const graphs = loadWorkspaceGraphs(root, override);
+  if (!inArg) return { graphs, in: inArg };
+  const wt = resolveWorktreeIn(root, inArg, override);
+  if (!wt) return { graphs, in: inArg };
+  if (!graphs.loaded.some((l) => l.child === wt.child) && !graphs.missing.includes(wt.child)) {
+    const graph = loadGraphCached(contextDirFor(join(resolve(root), wt.child)));
+    if (graph) {
+      graphs.loaded.push({ child: wt.child, graph });
+      graphs.loaded.sort((a, b) => a.child.localeCompare(b.child));
+    } else {
+      graphs.missing.push(wt.child);
+    }
+  }
+  return { graphs, in: wt.subpath ? `${wt.child}/${wt.subpath}` : wt.child };
 }
 
 /** "2 of 3 workspace repos have graphs; run graft build to cover repoC" — the
@@ -448,13 +541,13 @@ export function federateAsk(
   query: string,
   opts: FederateAskOptions = {},
 ): AskResult {
-  const wg = loadWorkspaceGraphs(root, override);
+  const { graphs: wg, in: inArg } = workspaceGraphsForIn(root, override, opts.in);
   const limit = opts.limit ?? 8;
   const fileTopLock = opts.fileTopLock ?? true;
 
   // `--in` uniforme: el resolvedor común valida, normaliza y distribuye el
   // sub-prefijo a cada hijo en alcance.
-  const scoped = scopeWorkspaceGraphs(wg, opts.in);
+  const scoped = scopeWorkspaceGraphs(wg, inArg);
   if (!scoped.ok) {
     throw new Error(scoped.message);
   }
@@ -770,9 +863,9 @@ export function federateGrep(
   pattern: string,
   opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; maxHits?: number } = {},
 ): { result: GrepResult; coverage: string } {
-  const wg = loadWorkspaceGraphs(root, override);
+  const { graphs: wg, in: inArg } = workspaceGraphsForIn(root, override, opts.in);
 
-  const scoped = scopeWorkspaceGraphs(wg, opts.in);
+  const scoped = scopeWorkspaceGraphs(wg, inArg);
   if (!scoped.ok) {
     throw new Error(scoped.message);
   }
@@ -900,12 +993,12 @@ export function federateCallers(
   symbol: string,
   opts: { direction?: Direction; depth?: number; in?: string } = {},
 ): { text: string; found: boolean } {
-  const wg = loadWorkspaceGraphs(root, override);
+  const { graphs: wg, in: inArg } = workspaceGraphsForIn(root, override, opts.in);
   const direction: Direction = opts.direction ?? "in";
   const depth = opts.depth && opts.depth >= 1 ? Math.floor(opts.depth) : 1;
   const showDepth = depth > 1;
 
-  const scoped = scopeWorkspaceGraphs(wg, opts.in);
+  const scoped = scopeWorkspaceGraphs(wg, inArg);
   if (!scoped.ok) {
     return { text: scoped.message, found: false };
   }
@@ -1010,10 +1103,10 @@ export async function federateSemantic(
   limit: number,
   inScope?: string,
 ): Promise<SemanticFederation> {
-  const wg = loadWorkspaceGraphs(root, override);
+  const { graphs: wg, in: inArg } = workspaceGraphsForIn(root, override, inScope);
 
   // ── Resolve scope from `in` using the shared resolver ───────────────────
-  const scoped = scopeWorkspaceGraphs(wg, inScope);
+  const scoped = scopeWorkspaceGraphs(wg, inArg);
   if (!scoped.ok) {
     return { text: scoped.message, isError: true, answer: scoped.message, notes: [], errors: [], found: 0 };
   }

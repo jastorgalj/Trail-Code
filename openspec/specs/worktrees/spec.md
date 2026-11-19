@@ -78,3 +78,32 @@ SHALL contar cada repositorio una sola vez aunque tenga worktrees vivos.
 GIVEN un workspace con el repo `backend` y un worktree `backend/.worktrees/tarea-x`
 WHEN se reconstruye el workspace y se consulta `trail status`
 THEN `backend` aparece una vez y el worktree no aparece como repo independiente
+
+### Requirement: Consultar un worktree enlazado desde el workspace padre
+
+Con el servidor MCP o el CLI enraizados en un workspace, `in` SHALL aceptar la ruta de un worktree
+enlazado de un hijo conocido — `<hijo>/.worktrees/<rama>`, relativa al workspace o absoluta, y
+cualquier path debajo de ella — y resolverla a ese worktree con el resto como sub-prefijo. La
+consulta SHALL responder sobre el árbol del worktree y cada path de resultado SHALL quedar prefijado
+`<hijo>/.worktrees/<rama>/`, para que el `file:line` abra el archivo correcto desde el padre. El
+worktree SHALL seguir sin contar como repo del workspace (requisito anterior): el hijo y su worktree
+nunca se consultan como dos repos a la vez.
+
+La primera consulta sobre un worktree SHALL sembrarlo desde el checkout principal y parchear la
+diferencia entre las ramas, igual que una consulta ejecutada dentro del worktree — nunca un rebuild
+en frío. Un `in` que no es un worktree enlazado SHALL conservar la resolución normal del workspace, y
+un sub-prefijo que no existe en el grafo del worktree SHALL seguir fallando con
+`nothing indexed under`.
+
+#### Scenario: Un símbolo que solo existe en la rama del worktree
+
+GIVEN un workspace con el hijo `backend` construido y un worktree `backend/.worktrees/feature-x` que
+introduce `branchOnlyHelper`
+WHEN se consulta `trail_find_all` con `in: "backend/.worktrees/feature-x"`
+THEN el símbolo aparece con paths `backend/.worktrees/feature-x/src/…`, y sin `in` no aparece
+
+#### Scenario: Ruta absoluta al worktree
+
+GIVEN el mismo workspace y el path absoluto de `backend/.worktrees/feature-x/src`
+WHEN se consulta `trail_find_code`, `trail_trace_calls` o `trail_find_all` con ese `in`
+THEN la resolución es idéntica a la del path relativo al workspace

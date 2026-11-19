@@ -472,6 +472,8 @@ without a `cd` to the repo root.
 
 A linked worktree (`.git` is a file) has no cache of its own, because the cache is git-ignored. **There is nothing to run first.** The first query copies the main checkout's graph — lexical graph, `ask` index and the vector index — and then patches the difference between the two branches. The answer is about that worktree's code, not about whatever branch the main checkout happens to be on. `GRAFT_NO_SEED=1` turns the seeding off.
 
+A worktree under `<repo>/.worktrees/<branch>` is also queryable **from the workspace parent**, without starting a second server on it: pass `in="<repo>/.worktrees/<branch>"` (or any path inside it, relative or absolute) to `trail_find_code`, `trail_trace_calls`, `trail_find_all`, `trail_search_semantic` or their CLI equivalents, and the query answers from that tree with every path prefixed `repo/.worktrees/branch/…`. The first such query seeds the worktree from the main checkout and patches the branch difference, exactly as a query run *inside* the worktree would; results never mix a worktree's branch with its checkout's.
+
 ## Visualize it (`trail viz`)
 
 `trail viz` opens a local, interactive view of the map. No install, no dev server; the viewer ships prebuilt inside the package.

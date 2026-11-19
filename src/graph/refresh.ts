@@ -52,6 +52,7 @@ import { BACKGROUND_TIMEOUT_MS, embeddingsDbPath } from "./build-run.js";
 import { driftCount, isClean, probeDrift, readFingerprint, type Drift } from "./fingerprint.js";
 import { invalidateGraphCaches } from "./load.js";
 import { seedGraph, type SeedResult } from "./seed.js";
+import { resolveWorktreeIn } from "./workspace.js";
 import { wiringPath } from "./write.js";
 import { cmd, tag } from "../brand.js";
 
@@ -471,6 +472,37 @@ export async function ensureFreshChildren(
     refreshed: true,
     note: `refreshed ${refreshedIn.join(", ")} (${files || "?"} file${files === 1 ? "" : "s"} changed) before answering`,
   };
+}
+
+/**
+ * Workspace variant for a LINKED WORKTREE named by `in`
+ * (`<child>/.worktrees/<branch>`): seed + refresh that worktree's own graph, so a
+ * `trail_*` query with `in=` it answers about that tree instead of refusing it.
+ *
+ * The federated loaders only READ graphs, so this is the place a fresh worktree
+ * gets its copy: `ensureFreshGraph` seeds it from the main checkout (`./seed.ts`)
+ * and then patches the branch difference as ordinary drift — a cold rebuild would
+ * throw away the summaries the main checkout already paid for. Returns null when
+ * `in` names no worktree, which is the common case.
+ */
+export async function ensureFreshWorktreeIn(
+  root: string,
+  inArg: string | undefined,
+  opts: RefreshOptions = {},
+): Promise<{ child: string; result: RefreshResult } | null> {
+  if (!inArg || opts.disabled || envDisabled()) return null;
+  const wt = resolveWorktreeIn(root, inArg, opts.contextDir);
+  if (!wt) return null;
+  // Deliberately NOT `opts`: same reason as `ensureFreshChildren` — `contextDir`
+  // is the parent's `--dir`, and a worktree's graph lives in its own cache dir.
+  // Progress does pass through, prefixed with the worktree's path.
+  const result = await ensureFreshGraph(resolve(root, wt.child), {
+    disabled: opts.disabled,
+    onProgress: opts.onProgress
+      ? (line) => opts.onProgress!(`${wt.child}: ${line}`)
+      : undefined,
+  });
+  return { child: wt.child, result };
 }
 
 /** The one-line note a CLI/MCP surface prints when a refresh actually happened.

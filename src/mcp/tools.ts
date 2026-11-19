@@ -7,7 +7,7 @@ import { formatAsk, formatAskWithSaved, skeleton, formatSkeleton } from '../ask/
 import { formatCheckReport } from '../context/check.js';
 import { formatGraphCheckReport } from '../graph/check.js';
 import { loadGraphCached } from '../graph/load.js';
-import { ensureFreshChildren, ensureFreshGraph, refreshNote } from '../graph/refresh.js';
+import { ensureFreshChildren, ensureFreshGraph, ensureFreshWorktreeIn, refreshNote } from '../graph/refresh.js';
 import { contextDirFor } from '../context/node-file.js';
 import { resolveSymbol, edgeWalk, type Direction, type EdgeHit } from '../graph/traverse.js';
 import { callersSavings, headerOf, hitLine, looseNoteFor } from '../graph/traverse-cli.js';
@@ -346,6 +346,15 @@ export async function callTool(
         ? await ensureFreshChildren(root, ws.children, { contextDir: dirOverride })
         : await ensureFreshGraph(root, { contextDir: dirOverride });
       note = refreshNote(r);
+      // A worktree of a child is not a workspace child, so `in=` naming one would
+      // otherwise answer "no workspace repo". Seed + refresh it here, where the
+      // gate runs: the federated readers only load graphs.
+      if (ws) {
+        const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
+        const wt = await ensureFreshWorktreeIn(root, inArg, { contextDir: dirOverride });
+        const wtNote = wt ? refreshNote(wt.result) : null;
+        if (wtNote) note = note ? `${note}\n${wtNote}` : wtNote;
+      }
     }
     const fed = ws ? await callWorkspaceTool(root, dirOverride, name, args) : null;
     const res = fed ?? (await callSingleTool(root, name, args, dirOverride));
