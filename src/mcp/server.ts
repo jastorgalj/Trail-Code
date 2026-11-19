@@ -6,6 +6,7 @@
 import { createInterface } from 'node:readline';
 import { TOOLS, callTool, findTool } from './tools.js';
 import { mcpInstructions } from './instructions.js';
+import { resolveScope } from './scope.js';
 import { hasGraftIndex } from '../graph/root.js';
 import { mainWorktreeRoot } from '../graph/seed.js';
 import { runUpkeep } from '../upkeep-run.js';
@@ -123,27 +124,4 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
     }
   });
   process.stdin.on('end', () => process.exit(0));
-}
-
-/**
- * Resolve `path` into the `in` value the caller must pass on each query.
- *
- * Deliberately stateless: the server may be one process behind a stateless
- * stdio→HTTP proxy shared by several agents, and nothing in the JSON-RPC stream
- * identifies the client. Any stored scope would leak across clients, so
- * `trail_set_scope` only computes the value and hands it back (#20).
- */
-function resolveScope(serverRoot: string, pathArg: unknown): { text: string; ok: boolean } {
-  const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '');
-  const srv = norm(String(serverRoot));
-  const p = norm(String(pathArg ?? ''));
-  const suffix = 'this server keeps no per-session scope, so the value must travel in each call';
-  if (p === srv || p === '') {
-    return { ok: true, text: `scope: whole workspace — omit "in" on every call (${suffix})` };
-  }
-  if (!p.startsWith(srv + '/')) {
-    return { ok: false, text: `path "${p}" is not under the server workspace "${srv}" — no scope resolved` };
-  }
-  const rel = p.slice(srv.length + 1);
-  return { ok: true, text: `scope: ${rel} — pass in: "${rel}" on each call you want narrowed to it (${suffix})` };
 }
