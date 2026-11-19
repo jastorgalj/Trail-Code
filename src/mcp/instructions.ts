@@ -46,21 +46,21 @@ export function toolSearchQuery(prefix = `mcp__${brand()}__`): string {
 /** Under trail, the same text with trail's tool names (see brand.ts `inBrand`). */
 export function mcpInstructions(): string {
   return inBrand([
-    'graft indexes this repo: every symbol, its file:line span and callers.',
+    'graft indexes this repo: symbols, spans, callers.',
     'Prefer these tools over grep/read.',
     '',
-    `**Deferred (bare names, no schemas)? Load all in ONE lookup:** ToolSearch "${toolSearchQuery()}" — one round trip, not one call per use.`,
+    `**Deferred (bare names, no schemas)? Load all in ONE lookup:** ToolSearch "${toolSearchQuery()}" — one round trip, not per use.`,
     '',
-    '- graft_set_scope — resolve a path to the `in` value to repeat on narrowed queries',
-    '- graft_find_code — where/how is X; ranked hits (lexical + structural, no embeddings)',
+    '- graft_set_scope — resolve a path to the `in`',
+    '- graft_find_code — where/how is X; ranked lexical+structural hits, no embeddings',
     '- graft_find_all — every occurrence',
     '- graft_trace_calls — callers, callees, blast radius',
-    '- graft_file_api — a file\'s API, ~200 tokens',
+    "- graft_file_api — a file's API, ~200 tokens",
     '- graft_repo_map — orient in a new repo',
-    '- graft_search_semantic — natural-language search over the embeddings index (docs/specs)',
+    '- graft_search_semantic — semantic search over embeddings',
     '- graft_check_freshness — is the index stale?',
-    '- graft_build — rebuild graph + embeddings, in background',
+    '- graft_build — rebuild graph + embeddings, background',
     '',
-    'Results include uncommitted edits — the graph refreshes before each query.',
+    'Includes uncommitted edits — the graph refreshes before each query.',
   ].join('\n'));
 }
