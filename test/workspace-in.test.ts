@@ -105,7 +105,10 @@ after(() => {
 const CHILDREN = ['a/x', 'a/y', 'b'] as const;
 const COMPUESTO = ['default-core/frontend', 'default-core/backend'] as const;
 
-test('resolveWorkspaceIn: a\\x\\src normaliza igual que a/x/src', () => {
+// Solo Windows: ahí el shell produce `\` y el resolver tiene que aceptarlo. En
+// posix un `\` es un carácter legal dentro de un nombre de archivo, y por eso
+// `toPosixPath` es deliberadamente la identidad (src/util/paths.ts:20-31).
+test('resolveWorkspaceIn: a\\x\\src normaliza igual que a/x/src', { skip: process.platform !== 'win32' }, () => {
   const r1 = resolveWorkspaceIn(CHILDREN, 'a\\x\\src');
   const r2 = resolveWorkspaceIn(CHILDREN, 'a/x/src');
   assert.deepStrictEqual(r1, r2);

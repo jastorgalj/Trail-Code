@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.30.0
+
+Everything below lands on top of `0.29.0`; `npm install -g trail-code` picks it
+up. Work is tracked per issue in `openspec/`.
+
+### Added
+
+- **`in=` takes a linked worktree of a workspace child.** `<child>/.worktrees/<branch>`,
+  relative or absolute, resolves as one more destination, and the worktree's graph is
+  seeded from the child's checkout and patched for the branch difference before the
+  query. Before, an agent working in a worktree either got `no workspace repo matching`
+  or, worse, answers from the main checkout it wasn't editing (#13).
+- **`trail_find_all` accepts `limit`** (default 50 over MCP) and applies it to the whole
+  federated result, not per child — 29 repos used to answer children × 300 hits. What
+  was left out is counted in the truncation note, and every MCP response is capped at
+  20 KB with a note saying how much was dropped. `trail grep --limit` follows the same
+  rule, in a repo and in a workspace (#18).
+- **The CLI says what it is doing.** `trail build` redraws one line per pass
+  (`parsing 412/1,204 files · 12s · src/…`) and stays silent when stderr isn't a TTY;
+  `ask`, `grep`, `skeleton`, `callers`, `map` and `blast` print `refreshing N changed
+  files…` before a rebuild — one line per repo in a workspace — and take a new
+  `--quiet` to drop it. `GRAFT_PROGRESS=1` keeps the build line alive through a pipe so
+  `init` can still read its count (#8).
+- **README: how to serve the map to a team** — one stdio server per repo versus one
+  long-running server behind a stdio→HTTP proxy with a workspace root, and what each
+  costs (#10).
+
+### Changed
+
+- **`trail_set_scope` no longer stores anything.** It resolves a path to the `in` value
+  and returns it, to be repeated on the narrowed queries, and rejects a path that
+  escapes the root (`..`), doesn't exist, is a file, or differs from the root only in
+  drive-letter case. Scope used to live in a process variable, so on a shared server one
+  client's scope narrowed everybody's answers with no way to clear it (#20).
+- **One `in=` for the four federated tools and the CLI.** `ask`, `trace_calls`,
+  `find_all`, `search_semantic` and `trail grep` resolve `in` the same way — a child, a
+  path inside it, or a folder holding children — and an `in` that matches nothing is an
+  error listing the repos instead of a silent search over all of them (#14).
+- **`trail ask --semantic` uses the MCP federation** instead of its own copy, so `--in`,
+  the coverage note and per-child failures can't diverge. Hits go to stdout, coverage
+  and failures to stderr, and a workspace with no index or an unreadable one exits 1
+  with a diagnosis rather than `no semantic matches found` (#25).
+- **`trail init` reports each skill with its path and state** (`created`/`updated`/
+  `unchanged`) and closes with one `skills:` line, so a second, idempotent run no longer
+  looks like it rewrote the file (#9).
+
+### Fixed
+
+- **Tool output stopped telling the model what to say.** Every savings line ended with
+  `At the end of your reply, tell the user…` — a prompt-injection pattern. Thousands
+  separators are `en-US` regardless of the host locale, and the workspace coverage note
+  appears only when there are no results (#17).
+- **MCP arguments are validated**: unknown keys, wrong types and `Object.prototype`
+  keys are rejected instead of passing silently, and `trail_set_scope` and
+  `trail_build` are dispatched again after pointing at the old `graft_*` names (#16).
+- **`trail_search_semantic` in a workspace** looked for the index at a literal
+  `graft/.cache/embeddings.db`, so it always answered `no semantic matches found`;
+  `in` was ignored and an empty `catch` hid the error. It now honours `in`, reports the
+  failing children, and the CLI shares the implementation (#19).
+- **Fourteen commands reject a root that is a file or does not exist**, instead of
+  building or reading a graph under a path that can't hold one (#12).
+- **The `initialize` instructions fit their budget again** (1101 → 983 chars), so
+  nothing relies on a host keeping a longer string.
+
 ## 0.29.0
 
 First release published as **`trail-code`** (the package used to be
