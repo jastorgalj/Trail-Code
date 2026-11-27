@@ -25,9 +25,11 @@ import {
   federateMap,
   federateSemantic,
   readWorkspace,
+  workspaceGraphsForIn,
+  scopeWorkspaceGraphs,
 } from '../graph/workspace.js';
 import type { NodeV1 } from '../graph/types.js';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { embedNodes, searchSemantic } from '../ask/semantic.js';
 import { canonicalToolName } from './tool-names.js';
 import { cmd } from '../brand.js';
@@ -120,6 +122,7 @@ export const TOOLS: ToolDef[] = [
       type: 'object',
       properties: {
         file: { type: 'string', description: 'repo-relative path (or unique basename) of the file' },
+        in: { type: 'string', description: IN_DESCRIPTION },
       },
       required: ['file'],
       additionalProperties: false,
@@ -284,6 +287,54 @@ async function callWorkspaceTool(
       const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
       const { text, isError } = await federateSemantic(root, dirOverride, query, limit, inArg);
       return { text, isError };
+    }
+    case 'graft_file_api': {
+      const file = String(args.file ?? '');
+      if (!file) return { text: 'trail_file_api requires a non-empty "file"', isError: true };
+      const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
+
+      let resolvedChild: string;
+
+      if (inArg) {
+        // `in` provided: resolve via workspaceGraphsForIn / scopeWorkspaceGraphs.
+        const { graphs, in: resolvedIn } = workspaceGraphsForIn(root, dirOverride, inArg);
+        const scoped = scopeWorkspaceGraphs(graphs, resolvedIn);
+        if (!scoped.ok) return { text: scoped.message, isError: true };
+        if (scoped.children.length === 0) return null;
+        if (scoped.children.length === 1) {
+          resolvedChild = scoped.children[0].child;
+        } else {
+          // `in` resolved to a group — disambiguate by the longest child prefix in `file`.
+          const names = scoped.children.map((sc) => sc.child);
+          const matched = names
+            .filter((c) => file === c || file.startsWith(`${c}/`))
+            .sort((a, b) => b.length - a.length)[0];
+          if (!matched) {
+            return {
+              text: `"in" resolved to multiple repos (${names.join(', ')}); include the child prefix in "file" or use a more specific "in"`,
+              isError: true,
+            };
+          }
+          resolvedChild = matched;
+        }
+      } else {
+        // No `in`: mirror CLI — longest child prefix contained in `file` wins.
+        const ws = readWorkspace(root, dirOverride);
+        if (!ws) return null;
+        const matched = (ws.children as string[])
+          .filter((c) => file === c || file.startsWith(`${c}/`))
+          .sort((a, b) => b.length - a.length)[0];
+        if (!matched) return null; // basename or no-child path → let callSingleTool handle
+        resolvedChild = matched;
+      }
+
+      const childRoot = join(resolve(root), resolvedChild);
+      // Strip child prefix from file if present (e.g. "trail/src/foo.ts" → "src/foo.ts").
+      const fileRelative = file.startsWith(`${resolvedChild}/`)
+        ? file.slice(resolvedChild.length + 1)
+        : file;
+      const r = skeleton(childRoot, fileRelative, { contextDir: dirOverride });
+      return { text: formatSkeleton(r), isError: !r.entries.length && !!r.note };
     }
     default:
       return null;

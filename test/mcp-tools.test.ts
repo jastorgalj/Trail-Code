@@ -89,28 +89,31 @@ function bigRepo(): string {
   return d;
 }
 
-test('TOOLS lists the six tools with schemas', async () => {
+test('TOOLS lists the nine tools with schemas', async () => {
   assert.deepEqual(TOOLS.map((t) => t.name), [
-    'graft_find_code',
-    'graft_file_api',
-    'graft_check_freshness',
-    'graft_trace_calls',
-    'graft_find_all',
-    'graft_repo_map',
+    'trail_set_scope',
+    'trail_find_code',
+    'trail_file_api',
+    'trail_check_freshness',
+    'trail_build',
+    'trail_trace_calls',
+    'trail_find_all',
+    'trail_repo_map',
+    'trail_search_semantic',
   ]);
   for (const t of TOOLS) {
     assert.ok(t.description.length > 0);
     assert.equal((t.inputSchema as { type: string }).type, 'object');
   }
-  // graft_trace_calls absorbed callees (direction) and blast radius (depth) — the
+  // trail_trace_calls absorbed callees (direction) and blast radius (depth) — the
   // schema must document both flags.
-  const callers = TOOLS.find((t) => t.name === 'graft_trace_calls')!;
+  const callers = TOOLS.find((t) => t.name === 'trail_trace_calls')!;
   const props = (callers.inputSchema as { properties: Record<string, unknown> }).properties;
-  assert.ok('direction' in props, 'graft_trace_calls schema should document `direction`');
-  assert.ok('depth' in props, 'graft_trace_calls schema should document `depth`');
-  const findAll = TOOLS.find((t) => t.name === 'graft_find_all')!;
+  assert.ok('direction' in props, 'trail_trace_calls schema should document `direction`');
+  assert.ok('depth' in props, 'trail_trace_calls schema should document `depth`');
+  const findAll = TOOLS.find((t) => t.name === 'trail_find_all')!;
   const findAllProps = (findAll.inputSchema as { properties: Record<string, unknown> }).properties;
-  assert.ok('limit' in findAllProps, 'graft_find_all schema should document `limit` (issue #18)');
+  assert.ok('limit' in findAllProps, 'trail_find_all schema should document `limit` (issue #18)');
 });
 
 test('graft_find_code returns ranked hits for a built repo', async () => {
@@ -367,8 +370,19 @@ const RENAMES: Record<string, string> = {
   graft_check: 'graft_check_freshness',
 };
 
-test('TOOLS advertises exactly the six new names — the roster does not grow', () => {
-  assert.deepEqual([...TOOLS.map((t) => t.name)].sort(), Object.values(RENAMES).sort());
+test('TOOLS advertises exactly the nine trail names — the roster does not grow', () => {
+  const expected = [
+    'trail_build',
+    'trail_check_freshness',
+    'trail_file_api',
+    'trail_find_all',
+    'trail_find_code',
+    'trail_repo_map',
+    'trail_search_semantic',
+    'trail_set_scope',
+    'trail_trace_calls',
+  ];
+  assert.deepEqual([...TOOLS.map((t) => t.name)].sort(), expected);
 });
 
 test('every old tool name still resolves to its replacement', () => {
@@ -393,4 +407,92 @@ test('an old name dispatches for real, not just in the alias map', async () => {
   const check = await callTool(d, 'graft_check', {});
   assert.equal(check.isError, false);
   assert.ok(!check.text.startsWith('[graft] refreshed'), 'old check name still skips the refresh');
+});
+
+// ── workspace federation for graft_file_api (issue #41) ──
+
+/** Parent dir with flat and nested built git children.
+ *  Children (sorted): grp/repoX, grp/repoY, repoA, repoB.
+ *  Each has a unique exported symbol: grpRepoXAdd, grpRepoYAdd, repoAAdd, repoBAdd. */
+function builtWorkspace(): string {
+  const parent = mkdtempSync(join(tmpdir(), 'graft-mcptools-ws-'));
+  const childFns: Record<string, string> = {
+    'repoA': 'repoAAdd',
+    'repoB': 'repoBAdd',
+    'grp/repoX': 'grpRepoXAdd',
+    'grp/repoY': 'grpRepoYAdd',
+  };
+  for (const [child, fn] of Object.entries(childFns)) {
+    mkdirSync(join(parent, child, '.git'), { recursive: true });
+    mkdirSync(join(parent, child, 'src'), { recursive: true });
+    writeFileSync(
+      join(parent, child, 'src', 'math.ts'),
+      `export function ${fn}(a: number, b: number): number {\n  return a + b;\n}\n`,
+    );
+  }
+  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', parent], { stdio: 'pipe' });
+  return parent;
+}
+
+test('trail_file_api schema includes `in` property', () => {
+  const def = TOOLS.find((t) => t.name === 'trail_file_api');
+  assert.ok(def, 'trail_file_api must be in TOOLS');
+  const props = (def!.inputSchema as { properties: Record<string, unknown> }).properties;
+  assert.ok('in' in props, 'trail_file_api schema must have `in` property (issue #41)');
+});
+
+test('graft_file_api federates in workspace — via `in` param', async () => {
+  const ws = builtWorkspace();
+  const r = await callTool(ws, 'graft_file_api', { file: 'src/math.ts', in: 'repoA' });
+  assert.equal(r.isError, false, `expected success, got: ${r.text}`);
+  assert.match(r.text, /repoAAdd/, 'should return signatures from the repoA child');
+});
+
+test('graft_file_api federates in workspace — child prefix inferred from file path (non-first child)', async () => {
+  const ws = builtWorkspace();
+  // Uses repoB — NOT the first alphabetical child (grp/repoX comes first).
+  // With the broken `childHint = file.split('/')[0]` or `childHint = ''` both
+  // resolve to children[0] = grp/repoX, which has no repoBAdd → isError.
+  const r = await callTool(ws, 'graft_file_api', { file: 'repoB/src/math.ts' });
+  assert.equal(r.isError, false, `expected success, got: ${r.text}`);
+  assert.match(r.text, /repoBAdd/, 'should strip child prefix and find signatures in repoB');
+});
+
+test('graft_file_api federates in workspace — nested child prefix inferred (grp/repoY)', async () => {
+  const ws = builtWorkspace();
+  // grp/repoY is a nested child (two segments). Broken code uses first segment 'grp'
+  // → resolves group → picks grp/repoX (first) → cannot find grpRepoYAdd → isError.
+  const r = await callTool(ws, 'graft_file_api', { file: 'grp/repoY/src/math.ts' });
+  assert.equal(r.isError, false, `expected success, got: ${r.text}`);
+  assert.match(r.text, /grpRepoYAdd/, 'should resolve grp/repoY and return its signatures');
+});
+
+test('graft_file_api federates in workspace — `in` with prefixed file strips prefix once', async () => {
+  const ws = builtWorkspace();
+  // File already contains the child prefix; the case must not double-strip.
+  const r = await callTool(ws, 'graft_file_api', { file: 'repoA/src/math.ts', in: 'repoA' });
+  assert.equal(r.isError, false, `expected success, got: ${r.text}`);
+  assert.match(r.text, /repoAAdd/);
+});
+
+test('graft_file_api federates in workspace — `in`=group, file has no child prefix → explicit ambiguity error', async () => {
+  const ws = builtWorkspace();
+  // `in=grp` resolves to 2 children (grp/repoX, grp/repoY); `src/math.ts` carries no child prefix.
+  // M1 mutation (matched ?? names[0]) would silently pick grp/repoX → return grpRepoXAdd.
+  // The correct code must return isError=true naming both children.
+  const r = await callTool(ws, 'graft_file_api', { file: 'src/math.ts', in: 'grp' });
+  assert.equal(r.isError, true, `expected ambiguity error, got success: ${r.text}`);
+  assert.match(r.text, /grp\/repoX/, 'error must name grp/repoX');
+  assert.match(r.text, /grp\/repoY/, 'error must name grp/repoY');
+  assert.doesNotMatch(r.text, /grpRepoXAdd/, 'must not silently return grpRepoX signatures');
+});
+
+test('graft_file_api federates in workspace — `in`=group, file has nested child prefix → resolves to grp/repoY', async () => {
+  const ws = builtWorkspace();
+  // `in=grp` resolves to 2 children; `grp/repoY/src/math.ts` starts with `grp/repoY/`
+  // → longest-prefix match picks grp/repoY → strips prefix → looks up src/math.ts in that child.
+  // M2 mutation (filter(c => false)) → matched=undefined → isError=true instead of success.
+  const r = await callTool(ws, 'graft_file_api', { file: 'grp/repoY/src/math.ts', in: 'grp' });
+  assert.equal(r.isError, false, `expected success, got: ${r.text}`);
+  assert.match(r.text, /grpRepoYAdd/, 'should resolve grp/repoY via longest prefix and return its signatures');
 });

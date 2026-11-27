@@ -908,7 +908,21 @@ grouped(program.command("skeleton"), GROUP.find)
     await refreshBefore(dir, opts);
     const { skeleton, formatSkeleton } = await import("./ask/ask.js");
     const globalOpts = program.opts<{ dir?: string }>();
-    const r = skeleton(dir, file, { contextDir: globalOpts.dir });
+    const ws = readWorkspace(dir, globalOpts.dir);
+    let r;
+    if (ws) {
+      // Workspace mode: resolve the child repo from the first matching child prefix in `file`.
+      const child = ws.children.find((c: string) => file === c || file.startsWith(`${c}/`));
+      if (child) {
+        const childRoot = join(dir, child);
+        const fileRelative = file.startsWith(`${child}/`) ? file.slice(child.length + 1) : file;
+        r = skeleton(childRoot, fileRelative, { contextDir: globalOpts.dir });
+      } else {
+        r = skeleton(dir, file, { contextDir: globalOpts.dir });
+      }
+    } else {
+      r = skeleton(dir, file, { contextDir: globalOpts.dir });
+    }
     if (opts.json) console.log(JSON.stringify(r, null, 2));
     else process.stdout.write(formatSkeleton(r));
   });
