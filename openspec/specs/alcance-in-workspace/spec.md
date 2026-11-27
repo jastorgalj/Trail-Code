@@ -10,10 +10,10 @@ cuatro tools.
 
 ### Requirement: Normalización de in
 
-El sistema SHALL normalizar el valor de `in` de las tools de consulta en un workspace con `normalizePathPrefix`
-(`src/util/paths.ts:66`) antes de resolverlo: `\` pasa a `/`, se quitan los `./` iniciales y las `/` finales.
-Un valor que normaliza a la cadena vacía SHALL tratarse como ausente (todos los hijos). Razón: es la misma
-normalización que ya aplica el camino de un solo repo, y un usuario de Windows escribe `a\x\src`.
+El sistema SHALL normalizar `in` con `normalizePathPrefix` (`src/util/paths.ts:66`) antes de resolverlo:
+`\` pasa a `/`, sin `./` inicial ni `/` final; vacío = ausente (todos los hijos). Un valor **absoluto**
+SHALL convertirse a relativo a la raíz del workspace en `workspaceGraphsForIn` (donde hay `root`); si es
+la raíz equivale a ausente, y si está fuera se pasa sin cambio y falla downstream.
 
 #### Scenario: separadores y barra final
 
@@ -26,6 +26,12 @@ THEN las tres resoluciones son idénticas a la de `a/x/src`
 GIVEN el mismo workspace
 WHEN se resuelve `in` con `/` y con `./`
 THEN el resultado es igual al de no pasar `in`: los tres hijos y ningún sub-prefijo
+
+#### Scenario: in absoluta dentro del workspace
+
+GIVEN un workspace con root `/home/user/ws` y los hijos `a/x` y `b`
+WHEN se llama una tool con `in: "/home/user/ws/a/x"` (ruta absoluta POSIX) o con `in: "C:/ws/a/x"` (Windows)
+THEN la respuesta es `isError: false` e idéntica a la de `in: "a/x"` (relativa)
 
 ### Requirement: in dentro o igual a un hijo
 
@@ -66,11 +72,9 @@ THEN los destinos son `a/x` y `a/y`, ambos sin sub-prefijo, y `b` no aparece
 
 ### Requirement: in sin coincidencia
 
-El sistema SHALL rechazar un `in` que no cumple ninguna de las reglas anteriores con el texto
-`no workspace repo matching "<in>" — repos: <todos los hijos separados por ", ">`, donde `<in>` es el valor
-normalizado. Las cuatro tools (`trail_find_code`, `trail_trace_calls`, `trail_find_all`,
-`trail_search_semantic`) SHALL responder `isError: true` con ese mismo texto. Razón: la lista de repos le
-permite al agente reintentar sin adivinar.
+El sistema SHALL rechazar un `in` sin coincidencia con `no workspace repo matching "<in>" — did you mean:
+"<s1>", "<s2>", "<s3>"?`, con hasta 3 repos más cercanos por distancia de Levenshtein O(n·m) (ascendente;
+empate alfabético). Las cuatro tools SHALL responder `isError: true` con ese mismo texto.
 
 #### Scenario: in que no es hijo ni grupo
 
@@ -78,14 +82,53 @@ GIVEN un workspace con los hijos `a/x`, `a/y` y `b`, y `GRAFT_NO_REFRESH=1` en e
 de refresco antepuesta)
 WHEN se llama cada una de las cuatro tools con `in: "nope"`
 THEN cada respuesta es `isError: true` y su texto es exactamente
-`no workspace repo matching "nope" — repos: a/x, a/y, b`
+`no workspace repo matching "nope" — did you mean: "a/x", "a/y", "b"?`
 
 #### Scenario: coincidencia por segmento y no por texto
 
 GIVEN el mismo workspace
-WHEN se resuelve `in` con `a/xx`, con `a/x_` y con `x`
-THEN las tres resoluciones son el error `no workspace repo matching`, porque ningún hijo es igual a ellos
-ni empieza con ellos más `/`
+WHEN se resuelve `in` con `a/xx` y con `a/x_`
+THEN las dos resoluciones son el error `no workspace repo matching`, con la sugerencia `"a/x"` (distancia 1),
+porque ningún hijo es igual a ellos ni empieza con ellos más `/`, ni son sufijo de ningún hijo
+
+### Requirement: Sufijo único de un hijo
+
+El sistema SHALL resolver un `in` que, sin coincidir con otra regla, es **sufijo de path** de exactamente
+un hijo → ese hijo, con el resto de `in` como sub-prefijo relativo. Si es sufijo de dos o más hijos,
+SHALL responder `"<in>" matches multiple repos: "<c1>", "<c2>" — be more specific`.
+Razón: el agente suele escribir `backend` en vez de `default-core/backend`.
+
+#### Scenario: sufijo único → inferir hijo
+
+GIVEN un workspace con los hijos `default-core/backend` y `default-core/frontend`
+WHEN se resuelve `in` con `backend` o con `backend/services/auth`
+THEN el resultado es `{ ok: true, targets: [{ child: "default-core/backend", childIn: "services/auth" }] }`
+(o `childIn: undefined` para el caso de solo `backend`)
+
+#### Scenario: sufijo ambiguo → error con candidatos
+
+GIVEN un workspace con los hijos `default-core/backend` e `infra-local/backend`
+WHEN se resuelve `in` con `backend`
+THEN el resultado es `isError: true` con texto que contiene `matches multiple repos`
+
+### Requirement: Validar in antes de refrescar el grafo
+
+El sistema SHALL validar `in` con `resolveWorkspaceIn` en `callTool` ANTES de `ensureFreshChildren`. Si
+`in` no coincide, SHALL retornar `isError: true` sin refrescar ningún grafo; si coincide, SHALL refrescar
+solo los hijos afectados. Razón: un typo en `in` no debe costar 4–17 s de refresh.
+
+#### Scenario: in inválido → no hay refresh
+
+GIVEN un workspace con los hijos `a/x`, `a/y` y `b` con grafos construidos
+WHEN se llama `trail_find_code` con `in: "typo_repo"` (que no coincide con ningún hijo ni sufijo)
+THEN la respuesta es `isError: true` con el texto de validación (sin nota de refresco),
+y `ensureFreshChildren` no fue invocado (verificable con spy/mock en tests de integración)
+
+#### Scenario: in válido → solo hijos afectados se refrescan
+
+GIVEN el mismo workspace
+WHEN se llama `trail_find_code` con `in: "a/x"` (un único hijo)
+THEN `ensureFreshChildren` se invoca con `children: ["a/x"]` y no con `["a/x", "a/y", "b"]`
 
 ### Requirement: Las cuatro tools resuelven in por el mismo resolvedor
 
