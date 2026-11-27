@@ -32,6 +32,7 @@ import { ensureFreshChildren, ensureFreshGraph, ensureFreshWorktreeIn, refreshNo
 import { isWorkspaceBuildRoot, loadWorkspaceGraphs, readWorkspace, writeWorkspace } from "./graph/workspace.js";
 import { NOT_GIT_LINE, NOT_GIT_PAIR_REFUSAL, homeFolderRefusal, isGitWorkTree } from "./init-guard.js";
 import { hasGraftIndex, nearestGraftRoot, rootProblem } from "./graph/root.js";
+import { seedGraph, nearestLinkedWorktreeRoot } from "./graph/seed.js";
 import { unsupportedExtensions, supportedExtensions } from "./graph/source-files.js";
 import { discoverWorkspaceChildren } from "./graph/scopes.js";
 import {
@@ -218,8 +219,21 @@ const DIR_ARG = ["[dir]", "repository root (default: nearest ancestor with a gra
  */
 function queryRoot(dir?: string): string {
   if (dir !== undefined) return requireRootDir(dir);
-  const { root, levels } = nearestGraftRoot(process.cwd(), program.opts<GlobalOpts>().dir);
-  if (levels > 0) console.error(`${tag()} no code map here: answering from ${contextDirFor(root, program.opts<GlobalOpts>().dir)}`);
+  const cwd = process.cwd();
+  const globalDir = program.opts<GlobalOpts>().dir;
+  // Seed the worktree's graph from the main checkout before we look for a root —
+  // otherwise nearestGraftRoot finds the main checkout (by walking up) and all
+  // queries answer silently from there, not from the worktree.
+  //
+  // `cwd` may be a subdirectory of the worktree (e.g. opened in `src/`), so we
+  // must resolve the worktree root first — mainWorktreeRoot requires the exact
+  // worktree root to find the `.git` file, and passing a subdirectory returns null.
+  if (!globalDir) {
+    const wtRoot = nearestLinkedWorktreeRoot(cwd);
+    if (wtRoot !== null) seedGraph(wtRoot);
+  }
+  const { root, levels } = nearestGraftRoot(cwd, globalDir);
+  if (levels > 0) console.error(`${tag()} no code map here: answering from ${contextDirFor(root, globalDir)}`);
   return root;
 }
 

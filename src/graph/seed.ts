@@ -204,6 +204,27 @@ function installGraph(srcGraph: string, destGraph: string): void {
 }
 
 /**
+ * Walk up from `dir` towards the filesystem root, returning the first
+ * directory that is a linked git worktree root (i.e. where `mainWorktreeRoot`
+ * returns a non-null value), or `null` when `dir` is not nested inside any
+ * linked worktree.
+ *
+ * Used by the CLI query path so that a session opened in a *subdirectory* of
+ * a worktree (e.g. `src/`) is seeded the same way as one opened at the
+ * worktree's root — `mainWorktreeRoot` requires the exact root to find the
+ * `.git` file, so we must resolve that root first.
+ */
+export function nearestLinkedWorktreeRoot(dir: string): string | null {
+  let current = resolve(dir);
+  while (true) {
+    if (mainWorktreeRoot(current) !== null) return current;
+    const parent = dirname(current);
+    if (parent === current) return null; // reached filesystem root
+    current = parent;
+  }
+}
+
+/**
  * Copy the parent checkout's graph into `root`'s own `graft/`, if all of this holds:
  * `root` is a linked worktree, it has no graph yet, the parent has one, and no `--dir`
  * override is in play (a custom output dir can't be mapped to a sibling checkout —
