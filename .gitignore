@@ -34,3 +34,6 @@ transcripts/
 # The @trailhq/trail package, laid out by scripts/pack-trail.mjs.
 /build/
 spikes/
+
+# trail's local build config — not committed.
+/.trail/config.json
