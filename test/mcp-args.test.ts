@@ -144,7 +144,7 @@ test('Scenario: solo falta un requerido', async () => {
   assert.equal(r.isError, true);
   assert.equal(
     r.text,
-    'missing required argument "query" for trail_find_code; expected one of: query, limit, full, in',
+    'missing required argument "query" for trail_find_code; expected one of: query, limit, full, in, mode',
   );
 });
 
@@ -154,7 +154,7 @@ test('Scenario: desconocido, faltante y valor inválido juntos', async () => {
   assert.equal(r.isError, true);
   assert.equal(
     r.text,
-    'unknown argument "pattern" (did you mean "query"?) for trail_find_code; missing required argument "query"; invalid argument "limit": expected number, got string; expected one of: query, limit, full, in',
+    'unknown argument "pattern" (did you mean "query"?) for trail_find_code; missing required argument "query"; invalid argument "limit": expected number, got string; expected one of: query, limit, full, in, mode',
   );
 });
 

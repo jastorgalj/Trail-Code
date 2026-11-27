@@ -8,7 +8,7 @@ import { formatCheckReport } from '../context/check.js';
 import { formatGraphCheckReport } from '../graph/check.js';
 import { loadGraphCached } from '../graph/load.js';
 import { ensureFreshChildren, ensureFreshGraph, ensureFreshWorktreeIn, refreshNote } from '../graph/refresh.js';
-import { contextDirFor } from '../context/node-file.js';
+import { contextDirFor, CACHE_DIR } from '../context/node-file.js';
 import { resolveSymbol, edgeWalk, type Direction, type EdgeHit } from '../graph/traverse.js';
 import { callersSavings, headerOf, hitLine, looseNoteFor } from '../graph/traverse-cli.js';
 import { withSavings, setInputRate } from '../context/savings.js';
@@ -24,6 +24,7 @@ import {
   federateGrep,
   federateMap,
   federateSemantic,
+  federateAskHybrid,
   readWorkspace,
   resolveWorktreeIn,
   resolveWorkspaceIn,
@@ -32,8 +33,11 @@ import {
   workspaceGraphsForIn,
 } from '../graph/workspace.js';
 import type { NodeV1 } from '../graph/types.js';
+import type { AskResult } from '../ask/ask.js';
 import { join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { embedNodes, searchSemantic } from '../ask/semantic.js';
+import { runHybridSingleRepo } from '../ask/hybrid-single.js';
 import { canonicalToolName } from './tool-names.js';
 import { cmd } from '../brand.js';
 import { validateToolArgs } from './validate-args.js';
@@ -98,7 +102,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'trail_find_code',
     description:
-      'Query the repo context graph in plain words using lexical and structural analysis (no embeddings). Returns ranked nodes with exact file:line spans and the relevant source inlined — usually the full answer, no file reads needed. The header (lexical) in the response is expected. For meaning-based search, use trail_search_semantic instead.',
+      'Query the repo context graph in plain words using lexical and structural analysis (no embeddings). Returns ranked nodes with exact file:line spans and the relevant source inlined — usually the full answer, no file reads needed. The header (lexical) in the response is expected. For meaning-based search, use trail_search_semantic instead. Set mode:"hybrid" to fuse lexical and semantic (embedding) results with Reciprocal Rank Fusion (k=60); requires a semantic index built with trail_build.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -111,6 +115,11 @@ export const TOOLS: ToolDef[] = [
         in: {
           type: 'string',
           description: IN_DESCRIPTION,
+        },
+        mode: {
+          type: 'string',
+          enum: ['hybrid'],
+          description: 'set to "hybrid" to fuse lexical + semantic results with RRF (k=60); requires a semantic index; degrades to lexical with an informative note when no index is found',
         },
       },
       required: ['query'],
@@ -250,6 +259,11 @@ async function callWorkspaceTool(
       if (!query) return { text: 'trail_find_code requires a non-empty "query"', isError: true };
       const limit = typeof args.limit === 'number' ? args.limit : 5;
       const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
+      const isHybrid = args.mode === 'hybrid';
+      if (isHybrid) {
+        const r = await federateAskHybrid(root, dirOverride, query, { limit, source: true, full: args.full === true, in: inArg });
+        return { text: formatAsk(r), isError: false };
+      }
       const r = federateAsk(root, dirOverride, query, { limit, source: true, full: args.full === true, in: inArg });
       return { text: formatAsk(r), isError: false };
     }
@@ -455,6 +469,59 @@ async function callSingleTool(
         const limit = typeof args.limit === 'number' ? args.limit : 5;
         const engine = new Graft({ contextDir: dirOverride });
         const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
+        const isHybrid = args.mode === 'hybrid';
+
+        if (isHybrid) {
+          // Single-repo hybrid: fuse lexical + semantic via RRF via shared helper.
+          // runHybridSingleRepo owns the in= filter, the searchSemantic call, and
+          // the rrfFuseHits invocation — shared with cli.ts to avoid divergence.
+          const lexResult = engine.ask(root, query, {
+            limit: Math.max(limit * 4, 20),
+            source: true,
+            full: args.full === true,
+            in: inArg,
+          });
+          const dbPath = join(contextDirFor(root, dirOverride), CACHE_DIR, 'embeddings.db');
+          const graph = loadGraphCached(contextDirFor(root, dirOverride));
+          const hybridResult = await runHybridSingleRepo(
+            lexResult.hits,
+            query,
+            dbPath,
+            graph?.nodes ?? [],
+            limit,
+            inArg,
+          );
+
+          let hybrid: AskResult;
+          if (hybridResult.kind === 'no-index') {
+            const infoNote =
+              '[hybrid] no semantic index found — showing lexical results only; ' +
+              'run `trail build` to enable hybrid mode';
+            hybrid = {
+              ...lexResult,
+              hits: lexResult.hits.slice(0, limit),
+              note: lexResult.note ? `${infoNote}\n${lexResult.note}` : infoNote,
+            };
+          } else if (hybridResult.kind === 'unreadable') {
+            const infoNote =
+              '[hybrid] semantic index unreadable — showing lexical results only; ' +
+              'run `trail build` to rebuild the index';
+            hybrid = {
+              ...lexResult,
+              hits: lexResult.hits.slice(0, limit),
+              note: lexResult.note ? `${infoNote}\n${lexResult.note}` : infoNote,
+            };
+          } else {
+            const { hits: finalHits } = hybridResult;
+            const baseLexNote = finalHits.length > 0 && lexResult.hits.length === 0
+              ? undefined : lexResult.note;
+            hybrid = { ...lexResult, mode: 'hybrid', hits: finalHits, note: baseLexNote };
+          }
+          const { text, savedTokens } = formatAskWithSaved(hybrid);
+          void savedTokens;
+          return { text, isError: false };
+        }
+
         const r = engine.ask(root, query, { limit, source: true, full: args.full === true, in: inArg });
         // Same event the CLI's `ask` reports: the tokens it saved.
         // One render serves both the answer and the saving the event reports.

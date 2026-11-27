@@ -49,12 +49,13 @@ import {
   fileFirstRoundRobin,
   roundRobinQueues,
 } from "../ask/file-selection.js";
-import { fuseScopes, STRONG_FLOOR, HIGH_FLOOR, type ScopedDoc } from "../ask/fuse.js";
+import { fuseScopes, STRONG_FLOOR, HIGH_FLOOR, RRF_K, type ScopedDoc } from "../ask/fuse.js";
 import { grepGraph, type GrepGroup, type GrepResult } from "../search/grep.js";
 import { formatGrepResult, zeroHitNote } from "../search/grep-cli.js";
 import { withSavings, type Savings } from "../context/savings.js";
 import { cmd } from "../brand.js";
-import { searchSemantic } from "../ask/semantic.js";
+import { rrfFuseHits, type RrfSemanticHit, type RrfGraphNode } from "../ask/hybrid.js";
+import { searchSemantic, type SemanticHit } from "../ask/semantic.js";
 
 /** The parent index written to `<parent>/graft/workspace.json`. Nodes/edges
  * never live at the parent — they live in each child's own `graft/`. */
@@ -549,6 +550,10 @@ export interface FederateAskOptions {
   in?: string;
   /** @internal File-level child RRF plus an exact workspace baseline top lock. */
   fileTopLock?: boolean;
+  /** When `"hybrid"`: fuse lexical + semantic results with RRF (1/(k+rank), k=60).
+   * Requires a semantic index built with `trail build`. When no index is found,
+   * degrades to lexical with an informative note (no isError). */
+  mode?: "hybrid";
 }
 
 interface ChildRun {
@@ -906,6 +911,184 @@ export function federateAsk(
   if (hits.length === 0 && note) result.note = result.note ? `${result.note}\n${note}` : note;
   return result;
 }
+
+/** Fuse lexical + semantic results with Reciprocal Rank Fusion (k=60).
+ *
+ * Calls {@link federateAsk} for the lexical baseline, then queries each child's
+ * semantic index (created by `trail build --semantic`). RRF score of a file is
+ * the sum of `1 / (k + rank)` across both ranked lists (1-indexed rank, k=60).
+ * Hits are the lexical hits re-ordered by combined RRF score; the hit FORMAT is
+ * identical to `federateAsk`'s output (`[child/]path:span · symbol`).
+ *
+ * Graceful degradation: if NO child has a semantic index the function returns
+ * the unmodified lexical result with an informative note (no `isError`).
+ * If SOME children lack an index a partial-coverage note is prepended.
+ *
+ * `in=` is respected and passed through to both lexical and semantic searches.
+ */
+export async function federateAskHybrid(
+  root: string,
+  override: string | undefined,
+  query: string,
+  opts: FederateAskOptions = {},
+): Promise<AskResult> {
+  const absRoot = resolve(root);
+  const limit = opts.limit ?? 8;
+
+  // ── 1. Lexical baseline ───────────────────────────────────────────────────
+  // Over-fetch so the RRF candidate pool is wide enough to surface items that
+  // rank low lexically but high semantically.
+  const lexResult = federateAsk(absRoot, override, query, {
+    ...opts,
+    limit: Math.max(limit * 4, 20),
+  });
+
+  // ── 2. Determine which children are in scope ──────────────────────────────
+  const { graphs: wg, in: inArg } = workspaceGraphsForIn(absRoot, override, opts.in);
+  const scoped = scopeWorkspaceGraphs(wg, inArg);
+  if (!scoped.ok) {
+    // federateAsk would already have thrown; this is a defensive fallback.
+    return { ...lexResult, hits: lexResult.hits.slice(0, limit) };
+  }
+
+  const semanticOverfetch = Math.max(limit * 4, 20);
+  const noIndexChildren: string[] = [];
+  const withIndexChildren: string[] = [];
+
+  // Collect all semantic hits from all children, to be globally ranked.
+  // key = "child/file_path"; we sort globally (not per-child) so rank-0 in
+  // a 1-node child doesn't equate to rank-0 in a 100-node child.
+  const allSemanticByScore: { key: string; child: string; sh: SemanticHit }[] = [];
+
+  // ── 3. Semantic search per child ─────────────────────────────────────────
+  for (const { child, childIn } of scoped.children) {
+    const dbPath = join(
+      contextDirFor(join(absRoot, child), override),
+      CACHE_DIR,
+      'embeddings.db',
+    );
+    if (!existsSync(dbPath)) {
+      noIndexChildren.push(child);
+      continue;
+    }
+    withIndexChildren.push(child);
+    try {
+      const hits = await searchSemantic(query, dbPath, semanticOverfetch);
+      for (const h of hits) {
+        // Apply sub-path filter when `in` points inside a child.
+        if (
+          childIn &&
+          h.file_path !== childIn &&
+          !h.file_path.startsWith(childIn + '/')
+        ) {
+          continue;
+        }
+        allSemanticByScore.push({ key: `${child}/${h.file_path}`, child, sh: h });
+      }
+    } catch {
+      // Index unreadable — treat this child as missing (informative note will say so).
+      noIndexChildren.push(child);
+      withIndexChildren.pop();
+    }
+  }
+
+  // ── 4. Graceful degradation when no semantic index exists anywhere ────────
+  if (withIndexChildren.length === 0) {
+    const infoNote =
+      '[hybrid] no semantic index found — showing lexical results only; ' +
+      'run `trail build` to enable hybrid mode';
+    const trimmed = { ...lexResult, hits: lexResult.hits.slice(0, limit) };
+    return {
+      ...trimmed,
+      note: trimmed.note ? `${infoNote}\n${trimmed.note}` : infoNote,
+    };
+  }
+
+  // ── 5-8. Fuse via shared rrfFuseHits helper ──────────────────────────────
+  // Sort globally by score desc so rank-0 goes to the globally strongest
+  // semantic hit, not to the first hit of the first declared child.
+  // Tie-break by key (child/file_path) for stable output across runs.
+  allSemanticByScore.sort((a, b) => b.sh.score - a.sh.score || a.key.localeCompare(b.key));
+
+  // Convert allSemanticByScore to RrfSemanticHit[] with prefixed file_path
+  // ("child/file_path") and prefixed node ids ("child:node_id") to avoid
+  // cross-child id collisions. in= was already applied in step 3 (childIn
+  // filter), so no inPrefix is passed to rrfFuseHits here.
+  const semHitsForRrf: RrfSemanticHit[] = allSemanticByScore.map(({ key, sh, child }) => ({
+    node_id: `${child}:${sh.node_id}`,
+    file_path: key,       // key is already "child/file_path"
+    score: sh.score,
+    snippet: sh.snippet,
+  }));
+
+  // Build graph nodes with prefixed paths and scoped ids for materialisation.
+  // path = "child/real_path" so the resulting pointer format matches lexical
+  // federated hits ("child/path:Lx-Ly"); scope = child for semanticOnlyScopes.
+  const childGraphMap = new Map(wg.loaded.map(l => [l.child, l.graph]));
+  const nodesForRrf: RrfGraphNode[] = [];
+  for (const child of withIndexChildren) {
+    const childGraph = childGraphMap.get(child);
+    if (!childGraph) continue;
+    for (const n of childGraph.nodes) {
+      nodesForRrf.push({
+        id: `${child}:${n.id}`,
+        path: `${child}/${n.path}`,
+        kind: n.kind,
+        span: n.span,
+        name: n.name,
+        summary: n.summary ?? null,
+        signature: n.signature ?? null,
+        scope: child,
+      });
+    }
+  }
+
+  const finalHits = rrfFuseHits(lexResult.hits, semHitsForRrf, nodesForRrf, limit);
+
+  // ── 9. Build partial-coverage note ───────────────────────────────────────
+  let extraNote: string | undefined;
+  if (noIndexChildren.length > 0) {
+    extraNote =
+      `[hybrid] ${withIndexChildren.length} of ${scoped.children.length} repo(s) have a semantic index; ` +
+      `run \`trail build\` to cover ${noIndexChildren.join(', ')}`;
+  }
+
+  // Extend scopes to include semantic-only children not already in lexical scopes.
+  const lexScopes = lexResult.scopes;
+  const federatedFromLex = lexScopes?.federated ?? [];
+  // Semantic-only hits are those in finalHits that were NOT in the original lexical hits;
+  // rrfFuseHits sets scope on materialised semantic-only hits via RrfGraphNode.scope.
+  const lexPointers = new Set(lexResult.hits.map(h => h.pointer));
+  const semanticOnlyScopes = [
+    ...new Set(
+      finalHits
+        .filter(h => !lexPointers.has(h.pointer) && h.scope)
+        .map(h => h.scope!),
+    ),
+  ].filter(s => !federatedFromLex.includes(s));
+  const finalScopes = finalHits.length > 0
+    ? { federated: [...federatedFromLex, ...semanticOnlyScopes], alsoMatched: lexScopes?.alsoMatched ?? [] }
+    : lexScopes;
+
+  // When lexResult had no hits its note says "no matching nodes"; suppress it
+  // if the semantic union produced hits (the user DID get results).
+  const baseLexNote = finalHits.length > 0 && lexResult.hits.length === 0
+    ? undefined
+    : lexResult.note;
+
+  return {
+    ...lexResult,
+    mode: 'hybrid',
+    hits: finalHits,
+    note: extraNote
+      ? baseLexNote
+        ? `${extraNote}\n${baseLexNote}`
+        : extraNote
+      : baseLexNote,
+    ...(finalScopes ? { scopes: finalScopes } : {}),
+  };
+}
+
 
 /** Merge every child's `GrepResult` into one, prefixing group paths with the
  * child dir and re-sorting by coupling (inDegree desc, path asc) across repos.

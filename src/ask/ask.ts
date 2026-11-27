@@ -99,7 +99,7 @@ const MAX_SPAN_LINES = 80;
 
 export interface AskResult {
   query: string;
-  mode: "structural" | "lexical" | "empty";
+  mode: "structural" | "lexical" | "empty" | "hybrid";
   /** For structural mode: the symbol whose neighbours we walked. */
   subject?: string;
   /** Authoritative result order. Lexical results preserve each hit's raw
@@ -1561,7 +1561,7 @@ function savedTokens(r: AskResult, body: string): number {
  * grep/skeleton/callers instead. Silent when the result is already rich (>3
  * hits) or in structural mode (a resolved who-calls IS the answer). */
 function escalationNudge(r: AskResult): string {
-  if ((r.mode !== "lexical" && r.mode !== "empty") || r.hits.length > 3) return "";
+  if (r.mode === "structural" || r.hits.length > 3) return "";
   const n = r.hits.length;
   return (
     `\n\n${tag()} ${n === 0 ? "no hits" : `only ${n} hit${n === 1 ? "" : "s"}`} — don't re-ask with new wording; switch tool: ` +
