@@ -92,7 +92,7 @@ test("A5: deleting the generated graft cache does not delete the persisted inclu
     runCli(["build", d]);
     const rebuilt = graphOf(d);
     assert.ok(rebuilt?.nodes.some((n) => n.id === "build/util.ts#fromBuild"));
-    assert.equal(existsSync(join(d, ".graft", "config.json")), true);
+    assert.equal(existsSync(join(d, ".trail", "config.json")), true);
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
@@ -107,7 +107,7 @@ test("A5: custom --dir builds keep repository config outside both output directo
 
     const graph = readGraph(wiringPath(out));
     assert.ok(graph?.nodes.some((n) => n.id === "build/util.ts#fromBuild"));
-    assert.equal(existsSync(join(d, ".graft", "config.json")), true);
+    assert.equal(existsSync(join(d, ".trail", "config.json")), true);
     assert.equal(existsSync(join(d, "graft", ".cache", "config.json")), false);
     assert.equal(existsSync(join(out, ".cache", "config.json")), false);
   } finally {

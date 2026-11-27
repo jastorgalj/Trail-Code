@@ -120,14 +120,15 @@ export function readWorkspace(root: string, override?: string): WorkspaceV1 | nu
     const knowledgeRepos = readKnowledgeRepos(root).length > 0
       ? readKnowledgeRepos(root)
       : Array.isArray(parsed.knowledgeRepos) ? parsed.knowledgeRepos.map(String) : undefined;
-    return {
+    const result: WorkspaceV1 = {
       version: 1,
       children: parsed.children.map(String),
-      excludeFromDiscovery: Array.isArray(parsed.excludeFromDiscovery)
-        ? parsed.excludeFromDiscovery.map(String)
-        : undefined,
-      knowledgeRepos,
     };
+    if (Array.isArray(parsed.excludeFromDiscovery))
+      result.excludeFromDiscovery = parsed.excludeFromDiscovery.map(String);
+    if (knowledgeRepos)
+      result.knowledgeRepos = knowledgeRepos;
+    return result;
   } catch {
     return null;
   }
