@@ -16,15 +16,17 @@ import {
   mkdtempSync, mkdirSync, writeFileSync, rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { buildGraph } from '../src/graph/build.js';
 import {
   splitWorkspace,
   resolveWorkspaceIn,
+  absoluteToWorkspaceRelative,
 } from '../src/graph/workspace.js';
 import { contextDirFor, CACHE_DIR } from '../src/context/node-file.js';
+import { readFingerprint } from '../src/graph/fingerprint.js';
 import { loadGraphCached } from '../src/graph/load.js';
 import {
   embedNodes,
@@ -144,12 +146,13 @@ test('resolveWorkspaceIn: ./ es ausente — todos los hijos sin sub-prefijo', ()
   assert.ok(r.targets.every((t) => t.childIn === undefined));
 });
 
-test('resolveWorkspaceIn: a/xx no coincide (segmento)', () => {
+test('resolveWorkspaceIn: a/xx no coincide (segmento) — sugiere a/x', () => {
   const r = resolveWorkspaceIn(CHILDREN, 'a/xx');
   assert.strictEqual(r.ok, false);
   if (r.ok) return;
   assert.match(r.message, /no workspace repo matching "a\/xx"/);
-  assert.match(r.message, /repos:/);
+  assert.match(r.message, /did you mean:/);
+  assert.match(r.message, /"a\/x"/);
 });
 
 test('resolveWorkspaceIn: a/x_ no coincide (segmento)', () => {
@@ -159,11 +162,12 @@ test('resolveWorkspaceIn: a/x_ no coincide (segmento)', () => {
   assert.match(r.message, /no workspace repo matching "a\/x_"/);
 });
 
-test('resolveWorkspaceIn: x no coincide', () => {
+test('resolveWorkspaceIn: x infiere a/x por sufijo único (R3)', () => {
   const r = resolveWorkspaceIn(CHILDREN, 'x');
-  assert.strictEqual(r.ok, false);
-  if (r.ok) return;
-  assert.match(r.message, /no workspace repo matching "x"/);
+  assert.strictEqual(r.ok, true);
+  if (!r.ok) return;
+  assert.strictEqual(r.narrowed, true);
+  assert.deepStrictEqual(r.targets, [{ child: 'a/x', childIn: undefined }]);
 });
 
 test('resolveWorkspaceIn: a/x/src → hijo a/x con sub-prefijo src', () => {
@@ -201,8 +205,8 @@ test('resolveWorkspaceIn: hijos compuestos — default-core/frontend/src → hij
 
 // ── 1.3 Per-tool con callTool ─────────────────────────────────────────────────
 
-// --- in sin coincidencia → mismo texto de error en las cuatro tools ---
-const NO_MATCH_MSG = /no workspace repo matching "nope" — repos: a\/x, a\/y, b/;
+// --- in sin coincidencia → mismo texto de error con sugerencias en las cuatro tools ---
+const NO_MATCH_MSG = /no workspace repo matching "nope" — did you mean: "a\/x", "a\/y", "b"\?/;
 
 test('find_code: in nope → isError con mensaje uniforme', async () => {
   const r = await callTool(ROOT, 'trail_find_code', { query: 'sharedFn', in: 'nope' });
@@ -377,4 +381,215 @@ test('las cuatro propiedades in tienen la misma descripción y contienen workspa
     assert.strictEqual(d, first, `descriptions differ:\n  ${first}\n  vs\n  ${d}`);
   }
   assert.match(first, /workspace/);
+});
+
+// ── R1: in absoluta → relativa al workspace ──────────────────────────────────
+
+test('absoluteToWorkspaceRelative: relativa se normaliza (sin ./ ni barra final)', () => {
+  assert.strictEqual(absoluteToWorkspaceRelative(ROOT, './a/x/src/'), 'a/x/src');
+});
+
+test('absoluteToWorkspaceRelative: absoluta bajo root → porción relativa', () => {
+  const abs = resolve(ROOT, 'a', 'x', 'src');
+  assert.strictEqual(absoluteToWorkspaceRelative(ROOT, abs), 'a/x/src');
+});
+
+test('absoluteToWorkspaceRelative: absoluta === root → cadenas vacía (todos los hijos)', () => {
+  assert.strictEqual(absoluteToWorkspaceRelative(ROOT, resolve(ROOT)), '');
+});
+
+test('absoluteToWorkspaceRelative: absoluta fuera de root → sin cambio (fallará downstream)', () => {
+  const outside = resolve(ROOT, '..', '..', 'definitely-outside-root');
+  assert.strictEqual(absoluteToWorkspaceRelative(ROOT, outside), outside.replace(/\\/g, '/'));
+});
+
+test('find_code: in absoluta nativa → misma respuesta que la relativa (R1)', async () => {
+  const abs = resolve(ROOT, 'a', 'x', 'src');
+  const rAbs = await callTool(ROOT, 'trail_find_code', { query: 'sharedFn', in: abs });
+  const rRel = await callTool(ROOT, 'trail_find_code', { query: 'sharedFn', in: 'a/x/src' });
+  assert.strictEqual(rAbs.isError, false, `expected isError:false, got: ${rAbs.text}`);
+  assert.strictEqual(rAbs.text, rRel.text, 'absoluta y relativa deben dar la misma respuesta');
+  assert.match(rAbs.text, /src\/x\.ts/);
+  assert.doesNotMatch(rAbs.text, /src\/y\.ts/);
+  assert.doesNotMatch(rAbs.text, /src\/b\.ts/);
+});
+
+test('find_code: in absoluta fuera del root → error, no crash (R1)', async () => {
+  const outside = resolve(ROOT, '..', '..', 'outside-abs-node');
+  const r = await callTool(ROOT, 'trail_find_code', { query: 'sharedFn', in: outside });
+  assert.strictEqual(r.isError, true, `expected isError:true, got: ${r.text}`);
+  assert.match(r.text, /no workspace repo matching/);
+});
+
+// ── R2: regresión — carpeta contenedora (grupo) en las cuatro tools ──────────
+// (find_code / find_all / trace_calls ya tienen su caso de grupo arriba; acá se
+// cubre el que faltaba: search_semantic sobre un grupo debe federar sobre los
+// dos hijos y excluir b.)
+
+test('search_semantic: in a → grupo, hits en a/ y excluye b/ (R2 regresión)', async () => {
+  _setEmbedderForTest(fakeEmbed);
+  try {
+    const r = await callTool(ROOT, 'trail_search_semantic', { query: 'sharedFn', in: 'a' });
+    assert.strictEqual(r.isError, false, `expected isError:false, got: ${r.text}`);
+    assert.doesNotMatch(r.text, /nothing indexed/);
+    assert.match(r.text, /src\/x\.ts/, 'el grupo a debe incluir a/x');
+    assert.doesNotMatch(r.text, /src\/b\.ts/, 'el grupo a debe excluir b');
+  } finally {
+    _setEmbedderForTest(null);
+  }
+});
+
+// ── R3: sufijo único de un hijo ──────────────────────────────────────────────
+
+test('resolveWorkspaceIn: backend → default-core/backend (sufijo único de 1 segmento)', () => {
+  const r = resolveWorkspaceIn(COMPUESTO, 'backend');
+  assert.strictEqual(r.ok, true);
+  if (!r.ok) return;
+  assert.strictEqual(r.narrowed, true);
+  assert.deepStrictEqual(r.targets, [{ child: 'default-core/backend', childIn: undefined }]);
+});
+
+test('resolveWorkspaceIn: backend/services/auth → default-core/backend + childIn services/auth', () => {
+  const r = resolveWorkspaceIn(COMPUESTO, 'backend/services/auth');
+  assert.strictEqual(r.ok, true);
+  if (!r.ok) return;
+  assert.strictEqual(r.narrowed, true);
+  assert.deepStrictEqual(r.targets, [{ child: 'default-core/backend', childIn: 'services/auth' }]);
+});
+
+test('resolveWorkspaceIn: backend ambiguo entre dos hijos → error matches multiple repos', () => {
+  const AMBIGUO = ['default-core/backend', 'infra-local/backend'] as const;
+  const r = resolveWorkspaceIn(AMBIGUO, 'backend');
+  assert.strictEqual(r.ok, false);
+  if (r.ok) return;
+  assert.match(r.message, /matches multiple repos/);
+  assert.match(r.message, /"default-core\/backend"/);
+  assert.match(r.message, /"infra-local\/backend"/);
+});
+
+// ── R4: sugerencias con edit distance ────────────────────────────────────────
+
+test('resolveWorkspaceIn: nope → did you mean con los tres hijos por distancia', () => {
+  const r = resolveWorkspaceIn(CHILDREN, 'nope');
+  assert.strictEqual(r.ok, false);
+  if (r.ok) return;
+  assert.strictEqual(
+    r.message,
+    'no workspace repo matching "nope" — did you mean: "a/x", "a/y", "b"?',
+  );
+});
+
+test('resolveWorkspaceIn: workspace vacío → error sin sección de sugerencias', () => {
+  const r = resolveWorkspaceIn([], 'nope');
+  assert.strictEqual(r.ok, false);
+  if (r.ok) return;
+  assert.strictEqual(r.message, 'no workspace repo matching "nope"');
+  assert.doesNotMatch(r.message, /did you mean/);
+});
+
+test('resolveWorkspaceIn: core/backen con 6 hijos → exactamente 3 sugerencias, orden distancia (no alfa), tie-break alfa (R4 ranking)', () => {
+  // Pool de 6 hijos. Distancias reales desde 'core/backen' (len=11):
+  //   core/backend=1, aa/backend=5, zz/backend=5, core/frontend=6, aaaa=10, bbbb=10
+  //
+  // Orden alfabético (que contradice distancia — alfa top-3: aa/backend, aaaa, bbbb):
+  //   aa/backend < aaaa < bbbb < core/backend < core/frontend < zz/backend
+  //
+  // Top-3 por distancia + tie alfa: core/backend(1), aa/backend(5), zz/backend(5)
+  //
+  // Mutaciones que detecta:
+  //   • sin .slice(0,3) → mensaje lista 6, no 3 (mensaje no coincide)
+  //   • sort DESC → 'aaaa','bbbb' primeros en el mensaje (mensaje no coincide)
+  //   • sub=0 en DP → aa/backend sube a d=1 (mismo len diff que core/backend)
+  //     y alfa aa < core, así que 'aa/backend' va primero → mensaje no coincide
+  // Pool con zz/backend ANTES de aa/backend: sin localeCompare el sort estable
+  // los dejaría en ese orden (zz primero), rompiendo el assert del mensaje.
+  const CHILDREN_6 = ['zz/backend', 'core/frontend', 'bbbb', 'core/backend', 'aaaa', 'aa/backend'] as const;
+  const r = resolveWorkspaceIn(CHILDREN_6, 'core/backen');
+  assert.strictEqual(r.ok, false);
+  if (r.ok) return;
+  assert.strictEqual(
+    r.message,
+    'no workspace repo matching "core/backen" — did you mean: "core/backend", "aa/backend", "zz/backend"?',
+    'se esperan exactamente 3 sugerencias, en orden de distancia, tie-break alfa',
+  );
+});
+
+// ── R5: validar in antes del refresh + refrescar solo hijos afectados ─────────
+// Estos tests habilitan el refresh (borran GRAFT_NO_REFRESH) sobre un workspace
+// AISLADO y ensucian un hijo para que un refresh sea observable. Se observa el
+// FINGERPRINT del hijo (que sólo cambia si se reconstruye) además de la nota de
+// respuesta: con la pre-validación el refresh no corre (in inválido) o corre sólo
+// sobre el hijo afectado; sin ella, el hijo ensuciado se reconstruye y el
+// fingerprint cambia (y en el caso válido aparece "refreshed" en el texto).
+
+async function buildIsolated(children: Record<string, Record<string, string>>): Promise<string> {
+  const root = tmpWs();
+  for (const [name, files] of Object.entries(children)) makeChildDir(root, name, files);
+  await splitWorkspace(root, undefined, async (childDir) => {
+    await buildGraph(childDir);
+  });
+  return root;
+}
+
+/** Print `[size, mtimeMs, hash]` del archivo `relSuffix` en el fingerprint del hijo. */
+function fpEntry(root: string, child: string, relSuffix: string): string | null {
+  const fp = readFingerprint(contextDirFor(join(root, child)));
+  if (!fp) return null;
+  const key = Object.keys(fp.files).find((k) => k.replace(/\\/g, '/').endsWith(relSuffix));
+  return key ? JSON.stringify(fp.files[key]) : null;
+}
+
+test('R5: in inválido no refresca ningún grafo (fingerprint de b intacto)', async () => {
+  const root = await buildIsolated({
+    'a/x': { 'src/x.ts': SHARED_FN_X },
+    b: { 'src/b.ts': SHARED_FN_B },
+  });
+  try {
+    // Ensucia b: si el refresh corriera, reconstruiría b y su fingerprint cambiaría.
+    writeFileSync(join(root, 'b', 'src', 'b.ts'), SHARED_FN_B + '// changed\n');
+    const before = fpEntry(root, 'b', 'src/b.ts');
+    assert.ok(before, 'b debe tener fingerprint tras el build');
+    const prev = process.env.GRAFT_NO_REFRESH;
+    delete process.env.GRAFT_NO_REFRESH;
+    try {
+      const r = await callTool(root, 'trail_find_code', { query: 'sharedFn', in: 'typo_repo' });
+      assert.strictEqual(r.isError, true, `expected isError:true, got: ${r.text}`);
+      assert.match(r.text, /no workspace repo matching "typo_repo"/);
+    } finally {
+      if (prev === undefined) delete process.env.GRAFT_NO_REFRESH;
+      else process.env.GRAFT_NO_REFRESH = prev;
+    }
+    const after = fpEntry(root, 'b', 'src/b.ts');
+    assert.strictEqual(after, before, 'in inválido no debe reconstruir b (el refresh no corre)');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('R5: in válido refresca solo el hijo afectado, no los demás', async () => {
+  const root = await buildIsolated({
+    'a/x': { 'src/x.ts': SHARED_FN_X },
+    'a/y': { 'src/y.ts': SHARED_FN_Y },
+  });
+  try {
+    // Ensucia a/y (NO el hijo afectado a/x): sin el filtro de hijos, el refresh
+    // recorrería todos los hijos, reconstruiría a/y y dejaría nota "refreshed".
+    writeFileSync(join(root, 'a', 'y', 'src', 'y.ts'), SHARED_FN_Y + '// changed\n');
+    const beforeY = fpEntry(root, 'a/y', 'src/y.ts');
+    assert.ok(beforeY, 'a/y debe tener fingerprint tras el build');
+    const prev = process.env.GRAFT_NO_REFRESH;
+    delete process.env.GRAFT_NO_REFRESH;
+    try {
+      const r = await callTool(root, 'trail_find_code', { query: 'sharedFn', in: 'a/x' });
+      assert.strictEqual(r.isError, false, `expected isError:false, got: ${r.text}`);
+      assert.doesNotMatch(r.text, /refreshed/, 'in=a/x no debe refrescar a/y');
+    } finally {
+      if (prev === undefined) delete process.env.GRAFT_NO_REFRESH;
+      else process.env.GRAFT_NO_REFRESH = prev;
+    }
+    const afterY = fpEntry(root, 'a/y', 'src/y.ts');
+    assert.strictEqual(afterY, beforeY, 'a/y (no afectado) no debe reconstruirse');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -29,6 +29,7 @@ import { loadGraphCached } from "./load.js";
 import { buildRepoMap, formatRepoMap } from "./map.js";
 import { discoverWorkspaceChildren, pathUnderPrefix } from "./scopes.js";
 import { normalizePathPrefix } from "../util/paths.js";
+import { topSuggestions } from "../util/strings.js";
 import {
   callersSavings,
   headerOf,
@@ -304,6 +305,26 @@ export function resolveWorktreeIn(
   return { child: wtRel, subpath: segments.slice(2).join("/") || undefined };
 }
 
+/**
+ * Convierte una ruta absoluta a relativa con respecto a `root` del workspace.
+ * - Si ya es relativa, la devuelve normalizada (separadores posix, sin `./` ni
+ *   barra final).
+ * - Si es absoluta y coincide exactamente con `root`, devuelve `''` (todos los
+ *   hijos).
+ * - Si es absoluta y está bajo `root`, devuelve la porción relativa.
+ * - Si es absoluta y está fuera de `root`, la devuelve normalizada sin cambio
+ *   para que el resolvedor de hijos emita el error habitual.
+ * No lee disco (pura).
+ */
+export function absoluteToWorkspaceRelative(root: string, inArg: string): string {
+  const normalized = normalizePathPrefix(inArg);
+  if (!isAbsolute(inArg)) return normalized;
+  const absRootPosix = normalizePathPrefix(resolve(root));
+  if (normalized === absRootPosix) return '';          // root → whole workspace
+  if (normalized.startsWith(`${absRootPosix}/`)) return normalized.slice(absRootPosix.length + 1);
+  return normalized;                                   // outside root — will error downstream
+}
+
 /** `loadWorkspaceGraphs` más el worktree que nombra `inArg`, con el `in` ya
  * normalizado contra la lista de hijos (absoluto → relativo). El grafo del
  * worktree lo siembra/refresca el gate de la query (`ensureFreshWorktreeIn`);
@@ -316,8 +337,10 @@ export function workspaceGraphsForIn(
 ): { graphs: WorkspaceGraphs; in: string | undefined } {
   const graphs = loadWorkspaceGraphs(root, override);
   if (!inArg) return { graphs, in: inArg };
-  const wt = resolveWorktreeIn(root, inArg, override);
-  if (!wt) return { graphs, in: inArg };
+  // R1: normalize absolute paths to relative before worktree detection
+  const normalizedInArg = absoluteToWorkspaceRelative(root, inArg);
+  const wt = resolveWorktreeIn(root, normalizedInArg, override);
+  if (!wt) return { graphs, in: normalizedInArg };
   if (!graphs.loaded.some((l) => l.child === wt.child) && !graphs.missing.includes(wt.child)) {
     const graph = loadGraphCached(contextDirFor(join(resolve(root), wt.child)));
     if (graph) {
@@ -363,7 +386,9 @@ export type WorkspaceInResolution =
  *     Coincidencia por segmento, no por prefijo de texto.
  *  3. `inArg` es ancestro de uno o más hijos (algún hijo empieza con `<inArg>/`)
  *     → todos esos hijos, sin sub-prefijo.
- *  4. Ninguna regla → error con texto `no workspace repo matching "<in>" — repos: …`.
+ *  3b. `inArg` es un sufijo de path de exactamente un hijo → ese hijo, con el
+ *     resto como `childIn`; si es sufijo de dos o más, error con los candidatos.
+ *  4. Ninguna regla → error con texto `no workspace repo matching "<in>" — did you mean: …`.
  */
 export function resolveWorkspaceIn(
   children: readonly string[],
@@ -403,10 +428,42 @@ export function resolveWorkspaceIn(
     };
   }
 
-  // Regla 4: sin coincidencia
+  // Regla 3b: sufijo de path — inferir el hijo cuando el sufijo es único.
+  // Para cada hijo se recorren sus sufijos de camino (segmento final, últimos
+  // dos segmentos, … el hijo completo); el primer sufijo que `normalized` iguala
+  // o del cual es sub-prefijo define el candidato, con el resto como `childIn`.
+  const suffixCandidates: Array<{ child: string; childIn?: string }> = [];
+  for (const c of sorted) {
+    const parts = c.split('/');
+    for (let i = 0; i < parts.length; i++) {
+      const suffix = parts.slice(i).join('/');
+      if (normalized === suffix || normalized.startsWith(suffix + '/')) {
+        const remaining = normalized.slice(suffix.length).replace(/^\//, '');
+        suffixCandidates.push({ child: c, childIn: remaining || undefined });
+        break; // primer sufijo (el más largo) coincide → basta para este hijo
+      }
+    }
+  }
+  if (suffixCandidates.length === 1) {
+    return { ok: true, narrowed: true, targets: suffixCandidates };
+  }
+  if (suffixCandidates.length > 1) {
+    const names = suffixCandidates.map((c) => `"${c.child}"`).join(', ');
+    return {
+      ok: false,
+      message: `"${normalized}" matches multiple repos: ${names} — be more specific`,
+    };
+  }
+
+  // Regla 4: sin coincidencia — sugerir los hijos más cercanos por edit distance
+  const suggestions = topSuggestions(normalized, sorted, 3);
+  const hint =
+    suggestions.length > 0
+      ? ` — did you mean: ${suggestions.map((s) => `"${s}"`).join(', ')}?`
+      : '';
   return {
     ok: false,
-    message: `no workspace repo matching "${normalized}" — repos: ${sorted.join(', ')}`,
+    message: `no workspace repo matching "${normalized}"${hint}`,
   };
 }
 

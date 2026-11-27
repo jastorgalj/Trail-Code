@@ -25,8 +25,11 @@ import {
   federateMap,
   federateSemantic,
   readWorkspace,
-  workspaceGraphsForIn,
+  resolveWorktreeIn,
+  resolveWorkspaceIn,
   scopeWorkspaceGraphs,
+  absoluteToWorkspaceRelative,
+  workspaceGraphsForIn,
 } from '../graph/workspace.js';
 import type { NodeV1 } from '../graph/types.js';
 import { join, resolve } from 'node:path';
@@ -384,6 +387,28 @@ export async function callTool(
       return { text: validation.text, isError: true };
     }
     const ws = readWorkspace(root, dirOverride);
+    // R5: validate `in` against the workspace children BEFORE refreshing any
+    // graph, so a typo costs a sub-second error instead of a 4–17 s refresh.
+    // Only for tools whose schema declares `in` (validateToolArgs already
+    // rejected it as unknown elsewhere), and only in a workspace (single-repo
+    // `in` is repo-relative and not resolved here). A worktree `in` is not a
+    // workspace child — it is seeded/refreshed below by ensureFreshWorktreeIn,
+    // so it skips this validation.
+    const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
+    const schemaProps = (def.inputSchema as { properties?: Record<string, unknown> }).properties;
+    const toolTakesIn = !!schemaProps && Object.hasOwn(schemaProps, 'in');
+    let affectedChildren: string[] | undefined;
+    if (ws && inArg && toolTakesIn) {
+      const normalizedIn = absoluteToWorkspaceRelative(root, inArg);
+      const isWorktreeIn = resolveWorktreeIn(root, normalizedIn, dirOverride) !== null;
+      if (!isWorktreeIn) {
+        const resolution = resolveWorkspaceIn(ws.children, normalizedIn);
+        if (!resolution.ok) {
+          return { text: resolution.message, isError: true };
+        }
+        affectedChildren = resolution.targets.map((t) => t.child);
+      }
+    }
     // Freshness first: an answer that cites file:line has to be about the code as
     // it is right now, including edits nobody has committed (or even saved through
     // this agent). ~3ms when nothing moved; a structural, $0 rebuild when it did.
@@ -394,14 +419,13 @@ export async function callTool(
     let note: string | null = null;
     if (!NO_REFRESH_TOOLS.has(name)) {
       const r = ws
-        ? await ensureFreshChildren(root, ws.children, { contextDir: dirOverride })
+        ? await ensureFreshChildren(root, affectedChildren ?? ws.children, { contextDir: dirOverride })
         : await ensureFreshGraph(root, { contextDir: dirOverride });
       note = refreshNote(r);
       // A worktree of a child is not a workspace child, so `in=` naming one would
       // otherwise answer "no workspace repo". Seed + refresh it here, where the
       // gate runs: the federated readers only load graphs.
       if (ws) {
-        const inArg = typeof args.in === 'string' && args.in ? args.in : undefined;
         const wt = await ensureFreshWorktreeIn(root, inArg, { contextDir: dirOverride });
         const wtNote = wt ? refreshNote(wt.result) : null;
         if (wtNote) note = note ? `${note}\n${wtNote}` : wtNote;
