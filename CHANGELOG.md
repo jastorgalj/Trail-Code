@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.31.0
+
+Everything below lands on top of `0.30.0`; `npm install -g trail-code` picks it up.
+
+### Added
+
+- **`trail_find_code` answers in hybrid mode.** `mode: "hybrid"` (or `--hybrid` on
+  `trail ask`) fuses lexical and semantic results with Reciprocal Rank Fusion, so a query
+  that names a symbol and a query that describes an intent land in one ranking instead of
+  two. Lexical stays the default; without a semantic index hybrid degrades to lexical with
+  an informational note rather than an error (#26).
+
+### Changed
+
+- **`in=` takes more shapes, and is validated before anything refreshes.** Absolute paths
+  (relativized to the workspace root) and an unambiguous suffix (`backend` resolving to
+  `default-core/backend`) now resolve; an `in=` that matches nothing fails with up to three
+  Levenshtein-ranked suggestions instead of searching every child, and the check runs
+  before the refresh, so a typo no longer rebuilds a dozen graphs to then find nothing (#15).
+
+### Fixed
+
+- **`trail_file_api` (skeleton) federates in a workspace.** It takes `in` like the other
+  federated tools and resolves the target child by explicit selector, file-path prefix or
+  group prefix, instead of answering from the root's graph (#41).
+- **A CLI query run from inside a linked worktree seeds that worktree.** `ask`, `grep` and
+  `map` resolved the worktree root only when `cwd` was the root itself; from
+  `<worktree>/src` the seed was skipped and the answer came from the main checkout's graph
+  with nothing saying so (#39, #40).
+
 ## 0.30.0
 
 Everything below lands on top of `0.29.0`; `npm install -g trail-code` picks it
