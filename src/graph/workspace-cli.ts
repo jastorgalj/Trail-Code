@@ -15,6 +15,7 @@ import { formatAsk } from "../ask/ask.js";
 import type { Direction } from "./traverse.js";
 import {
   federateAsk,
+  federateAskHybrid,
   federateCallers,
   federateCheck,
   federateGrep,
@@ -117,13 +118,15 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
   if (notice) console.error(notice);
 }
 
-export function runWorkspaceAsk(
+export async function runWorkspaceAsk(
   root: string,
   override: string | undefined,
   query: string,
-  opts: { limit?: number; source?: boolean; full?: boolean; in?: string; json?: boolean },
-): void {
-  const r = federateAsk(root, override, query, { limit: opts.limit, source: opts.source, full: opts.full, in: opts.in });
+  opts: { limit?: number; source?: boolean; full?: boolean; in?: string; json?: boolean; hybrid?: boolean },
+): Promise<void> {
+  const r = opts.hybrid
+    ? await federateAskHybrid(root, override, query, { limit: opts.limit, source: opts.source, full: opts.full, in: opts.in })
+    : federateAsk(root, override, query, { limit: opts.limit, source: opts.source, full: opts.full, in: opts.in });
   if (opts.json) console.log(JSON.stringify(r, null, 2));
   else process.stdout.write(formatAsk(r));
 }

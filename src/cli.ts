@@ -837,9 +837,10 @@ grouped(program.command("ask"), GROUP.find)
   .option("--json", "output the result as JSON")
   .option("--no-graph-rank", "rank by lexical relevance only, without the graph-connectivity re-rank (ablation/eval)")
   .option("--semantic", "use semantic (embedding) search instead of lexical — finds conceptually related code even without exact keywords; fallback when MCP trail_search_semantic is not available")
+  .option("--hybrid", "fuse lexical + semantic results with RRF (k=60); requires a semantic index built with trail build; degrades to lexical with an informative note when no index is found")
   .option(...NO_REFRESH_FLAG)
   .option(...QUIET_FLAG)
-  .action(async (query: string, dirArg: string | undefined, opts: { limit: string; source?: boolean; full?: boolean; in?: string; json?: boolean; refresh?: boolean; quiet?: boolean; graphRank?: boolean; semantic?: boolean }) => {
+  .action(async (query: string, dirArg: string | undefined, opts: { limit: string; source?: boolean; full?: boolean; in?: string; json?: boolean; refresh?: boolean; quiet?: boolean; graphRank?: boolean; semantic?: boolean; hybrid?: boolean }) => {
     // The prompt hook passes what the person typed on stdin, out of sight of `ps`.
     if (query === "-") query = readFileSync(0, "utf8").trim();
     const dir = noteQuery(queryRoot(dirArg));
@@ -885,12 +886,51 @@ grouped(program.command("ask"), GROUP.find)
       return;
     }
     if (readWorkspace(dir, askGlobalDir)) {
-      runWorkspaceAsk(dir, askGlobalDir, query, {
+      await runWorkspaceAsk(dir, askGlobalDir, query, {
         limit: Number(opts.limit), source: opts.source, full: opts.full, in: opts.in, json: opts.json,
+        hybrid: opts.hybrid,
       });
       return;
     }
     const engine = engineFrom();
+    // --hybrid: single-repo path — fuse lexical + semantic with RRF via shared helper.
+    if (opts.hybrid) {
+      const { runHybridSingleRepo: runHybrid } = await import('./ask/hybrid-single.js');
+      const { contextDirFor: ctxDir, CACHE_DIR } = await import('./context/node-file.js');
+      let lexResult;
+      try {
+        lexResult = engine.ask(dir, query, { limit: Number(opts.limit) * 4, source: opts.source, full: opts.full, in: opts.in, graphRank: opts.graphRank });
+      } catch (err) {
+        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1); return;
+      }
+      const dbPath = join(ctxDir(dir, askGlobalDir), CACHE_DIR, 'embeddings.db');
+      const { formatAsk: fmtAsk } = await import('./ask/ask.js');
+      const { loadGraphCached: lgc } = await import('./graph/load.js');
+      const graphNodes = lgc(ctxDir(dir, askGlobalDir))?.nodes ?? [];
+      const hybridResult = await runHybrid(
+        lexResult.hits,
+        query,
+        dbPath,
+        graphNodes,
+        Number(opts.limit),
+        typeof opts.in === 'string' && opts.in ? opts.in : undefined,
+      );
+      let hybrid;
+      if (hybridResult.kind === 'no-index') {
+        const infoNote = '[hybrid] no semantic index found — showing lexical results only; run `trail build` to enable hybrid mode';
+        hybrid = { ...lexResult, hits: lexResult.hits.slice(0, Number(opts.limit)), note: lexResult.note ? `${infoNote}\n${lexResult.note}` : infoNote };
+      } else if (hybridResult.kind === 'unreadable') {
+        const infoNote = '[hybrid] semantic index unreadable — showing lexical results only; run `trail build` to rebuild the index';
+        hybrid = { ...lexResult, hits: lexResult.hits.slice(0, Number(opts.limit)), note: lexResult.note ? `${infoNote}\n${lexResult.note}` : infoNote };
+      } else {
+        const baseLexNote = hybridResult.hits.length > 0 && lexResult.hits.length === 0 ? undefined : lexResult.note;
+        hybrid = { ...lexResult, mode: 'hybrid' as const, hits: hybridResult.hits, note: baseLexNote };
+      }
+      if (opts.json) { console.log(JSON.stringify(hybrid, null, 2)); }
+      else { process.stdout.write(fmtAsk(hybrid)); }
+      return;
+    }
     let r;
     try {
       r = engine.ask(dir, query, { limit: Number(opts.limit), source: opts.source, full: opts.full, in: opts.in, graphRank: opts.graphRank });
